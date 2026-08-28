@@ -1,0 +1,82 @@
+'use client'
+
+import { useState } from 'react'
+import { useLedger } from '@/store/useLedger'
+import { I } from '@/components/Icon'
+import { RoughBtn, RoughCheck } from '@/components/rough/controls'
+import { Stamp, ViewHead, EmptyNote } from '@/components/bits'
+import { habitDoneOn, habitStreak, habitWeekDots } from '@/lib/derivations'
+import { habitColor } from '@/lib/colors'
+import { todayStr } from '@/lib/dates'
+
+export default function HabitsView() {
+  const ledger = useLedger((s) => s.ledger)!
+  const toggleHabit = useLedger((s) => s.toggleHabit)
+  const addHabit = useLedger((s) => s.addHabit)
+  const t = todayStr()
+
+  /* new-habit form */
+  const [name, setName] = useState('')
+  const [perWeek, setPerWeek] = useState('7')
+  const [creating, setCreating] = useState(false)
+
+  async function submitHabit(e?: React.FormEvent) {
+    e?.preventDefault()
+    const n = name.trim()
+    if (!n) return
+    setCreating(true)
+    const ok = await addHabit(n, Number(perWeek) || 7)
+    setCreating(false)
+    if (ok) {
+      setName('')
+      setPerWeek('7')
+    }
+  }
+
+  return (
+    <>
+      <ViewHead title="Habits" sub="streaks are built daily" />
+
+      {/* v11: create a habit */}
+      <div className="card">
+        <Stamp icon="plus">Add a habit</Stamp>
+        <form onSubmit={submitHabit} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <label style={{ flex: 2, minWidth: 160, fontSize: '.74rem', fontWeight: 600, color: 'var(--ink-soft)', display: 'flex', flexDirection: 'column', gap: 5 }}>
+            Name
+            <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Meditate" />
+          </label>
+          <label style={{ width: 110, fontSize: '.74rem', fontWeight: 600, color: 'var(--ink-soft)', display: 'flex', flexDirection: 'column', gap: 5 }}>
+            x / week
+            <input type="number" min={1} max={7} value={perWeek} onChange={(e) => setPerWeek(e.target.value)} aria-label="Times per week" />
+          </label>
+          <RoughBtn variant="primary" className="btn-sm" type="submit" disabled={creating}>
+            <I name="plus" /> Add
+          </RoughBtn>
+        </form>
+      </div>
+
+      <div className="card">
+        <Stamp icon="check">Daily habits</Stamp>
+        {ledger.habits.length === 0 && <EmptyNote>No habits yet — add your first above.</EmptyNote>}
+        {ledger.habits.map((h) => {
+          const hex = habitColor(h.id, h.color)
+          const done = habitDoneOn(ledger, h.id, t)
+          const dots = habitWeekDots(ledger, h.id)
+          return (
+            <div className="habit-row" key={h.id}>
+              <RoughCheck done={done} color={hex} seedKey={h.id} large onClick={() => toggleHabit(h.id)} aria-label={`Toggle ${h.name}`} />
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '.92rem' }}>{h.name}</div>
+                <div style={{ fontSize: '.66rem', color: 'var(--ink-faint)', fontFamily: 'var(--fm)' }}>{h.targetPerWeek}x / week target</div>
+              </div>
+              <div className="habit-mini-heat">
+                {dots.map((on, i) => <span key={i} className={on ? 'hit' : ''} style={on ? { background: hex } : undefined} />)}
+              </div>
+              <span className="habit-streak-badge">{habitStreak(ledger, h.id)}d streak</span>
+            </div>
+          )
+        })}
+      </div>
+    </>
+  )
+}

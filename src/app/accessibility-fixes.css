@@ -1,0 +1,89 @@
+/* ============================================================
+   Ledger — accessibility layer (v11)
+   Imported after ledger.css. Only cross-cutting a11y rules live
+   here; all theming and component styling is in ledger.css.
+   ============================================================ */
+
+/* ---- keyboard focus: always visible, theme-aware ---- */
+:focus-visible {
+  outline: 2.5px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+button:focus-visible,
+.btn:focus-visible,
+.dock-btn:focus-visible,
+.sheet-item:focus-visible,
+.seg-btn:focus-visible,
+.check:focus-visible,
+.habit-check:focus-visible,
+.profile-menu-item:focus-visible,
+.consistency-dropdown-btn:focus-visible,
+.admin-tab:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---- skip link (screen readers / keyboard) ---- */
+.skip-link {
+  position: absolute;
+  left: 12px;
+  top: -60px;
+  z-index: 200;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+  font-size: 0.84rem;
+  border-radius: 9px;
+  padding: 10px 16px;
+  transition: top 0.15s var(--ease);
+}
+.skip-link:focus { top: 12px; }
+
+/* ---- defensive text color: nothing may inherit white from shadcn ---- */
+html { color: var(--ink); }
+.card, .sheet, .modal, .admin-panel-card, .consistency-card, .dock, .topbar,
+.preview-box, .board-col, .settings-section, .login-card, .wrapped-hero,
+.profile-menu, .kcard, .goal-card, .ds-cell, .toast {
+  color: var(--ink);
+}
+
+/* ---- touch targets ---- */
+@media (pointer: coarse) {
+  .btn, .sheet-item, .seg-btn, .admin-action-btn, .month-switch button { min-height: 48px; }
+  .check, .habit-check { width: 26px; height: 26px; }
+}
+
+/* ---- reduced motion ---- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .view { animation: none; }
+}
+
+/* ---- screen-reader only ---- */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* ---- print: the book on paper ---- */
+@media print {
+  body { background: #fff; color: #111; }
+  body::after { display: none; }
+  .topbar, .dock, .sheet, .sheet-scrim, .modal-overlay, .admin-panel,
+  .toast, .imp-banner, .skip-link, .note-add { display: none !important; }
+  .content { padding: 0; max-width: none; }
+  .card, .consistency-card { break-inside: avoid; box-shadow: none; border-color: #bbb; background: #fff; }
+}

@@ -1,0 +1,283 @@
+// Ledger — Prisma schema (PostgreSQL — Neon on Netlify; works with any hosted Postgres).
+// Every view derives from these tables. JSON columns are stored as TEXT
+// (JSON-serialized) and marshalled in src/lib/neon-sql.ts.
+//
+// binaryTargets: "native" covers local dev + Netlify build machines; the two
+// "rhel" targets cover Netlify's serverless function runtimes (Amazon Linux 2
+// and Amazon Linux 2023) so the query engine loads inside the deployed functions.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-1.0.x", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/* ---------- auth ---------- */
+
+model User {
+  id            String    @id @default(cuid())
+  name          String    @unique
+  role          String    @default("member") // 'admin' | 'member'
+  passwordHash  String? // null = any password opens the book (prototype behavior)
+  forceLogoutAt DateTime? // sessions created before this are dead
+  createdAt     DateTime  @default(now())
+  // v10 additions:
+  isActive              Boolean   @default(true) // false = deactivated by admin
+  passwordResetToken    String? // hex token; null when not in reset flow
+  passwordResetExpires  DateTime? // when the reset token expires
+  dockConfig            String    @default("{\"enabled\":[\"habits\",\"screen\",\"board\",\"budget\",\"goals\",\"inbox\",\"matrix\",\"notes\",\"people\"],\"keepInDock\":[\"habits\"]}") // per-user dock customization (JSON)
+  llmSettings           LlmSetting[]
+  adminActions          AdminAction[]  @relation("AdminActor")
+  adminActionsTarget    AdminAction[]  @relation("AdminTarget")
+
+  sessions       Session[]
+  goals          Goal[]
+  tasks          Task[]
+  habits         Habit[]
+  metrics        Metric[]
+  importantDates ImportantDate[]
+  days           Day[]
+  activities     Activity[]
+  dayHabits      DayHabit[]
+  dayMetrics     DayMetric[]
+  notes          Note[]
+  inboxItems     InboxItem[]
+  backups        UserBackup[]
+  screenEntries  ScreenEntry[]
+}
+
+/// LLM credentials — either system-wide (userId = null) or per-user.
+/// Multiple rows per userId = fallback chain (tried in priority order).
+model LlmSetting {
+  id        String   @id @default(cuid())
+  userId    String? // null = system-wide; otherwise points to User.id
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  priority  Int      @default(0) // lower = tried first
+  provider  String // 'gemini' | 'groq' | 'openai' | 'cerebras' | 'openrouter' | 'custom'
+  model     String // e.g. 'gpt-4o-mini'
+  apiKey    String // encrypted at rest via app-level XOR (since we have no KMS)
+  baseUrl   String? // for 'custom' provider
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, priority])
+}
+
+/// Per-user snapshot for admin-initiated backups.
+model UserBackup {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdBy String // admin user id who initiated the backup
+  payload   String // full user data: user row + goals/tasks/habits/etc as JSON
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+/// Audit log for admin actions (deactivate, promote, force-logout, delete, login-as, etc.)
+model AdminAction {
+  id        String   @id @default(cuid())
+  actorId   String
+  actor     User     @relation("AdminActor", fields: [actorId], references: [id])
+  targetId  String
+  target    User     @relation("AdminTarget", fields: [targetId], references: [id])
+  action    String // 'deactivate' | 'activate' | 'promote' | 'demote' | 'force_logout' | 'reset_link' | 'login_as' | 'delete' | 'backup_user' | 'backup_all' | 'restore' | 'self_delete'
+  details   String? // arbitrary metadata (JSON)
+  createdAt DateTime @default(now())
+
+  @@index([targetId, createdAt])
+  @@index([actorId, createdAt])
+}
+
+model Session {
+  token       String   @id
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+  // v10: when an admin uses "login as user", this is set to the admin's user id
+  impersonatedBy String?
+
+  @@index([userId])
+}
+
+/* ---------- per-user catalogs (human ids like "deep-work") ---------- */
+
+model Goal {
+  userId            String
+  id                String // e.g. "deep-work"
+  name              String
+  unit              String   @default("hours")
+  target            Float    @default(30)
+  deadline          DateTime?
+  weeklyTargetHours Float    @default(8)
+  color             String? // stable hex; null = derived from palette
+  sortOrder         Int      @default(0)
+  milestones        String   @default("[]") // JSON: [{label, done}]
+  createdAt         DateTime @default(now())
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tasks Task[]
+
+  @@id([userId, id])
+}
+
+model Task {
+  id          String   @id @default(cuid())
+  userId      String
+  goalId      String
+  label       String
+  status      String   @default("todo") // 'todo' | 'doing' | 'done'
+  priority    String   @default("normal") // 'normal' | 'high'
+  urgent      Boolean  @default(false)
+  important   Boolean  @default(true)
+  lastTouched DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  goal Goal  @relation(fields: [goalId, userId], references: [id, userId], onDelete: Cascade)
+
+  @@index([userId, status])
+}
+
+model Habit {
+  userId        String
+  id            String // e.g. "meditate"
+  name          String
+  targetPerWeek Int     @default(7)
+  color         String?
+  sortOrder     Int     @default(0)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, id])
+}
+
+model Metric {
+  userId        String
+  id            String
+  name          String
+  direction     String  @default("down") // 'down' | 'up'
+  unit          String  @default("")
+  dailyTarget   Float?
+  monthlyTarget Float?
+  sortOrder     Int     @default(0)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, id])
+}
+
+model ImportantDate {
+  id              String   @id @default(cuid())
+  userId          String
+  label           String
+  date            DateTime
+  type            String   @default("event") // deadline | birthday | reminder | event
+  repeatsAnnually Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, date])
+}
+
+/* ---------- the book ---------- */
+
+model Day {
+  userId    String
+  date      DateTime
+  highlight String?
+  checkIn   String? // JSON: {question, answer}
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, date])
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  userId    String
+  date      DateTime
+  goalId    String? // free-form: goals can be created after the fact
+  hours     Float
+  start     String? // "09:15"
+  end       String? // "11:45"
+  label     String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, date])
+}
+
+model DayHabit {
+  userId  String
+  date    DateTime
+  habitId String
+  done    Boolean  @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, date, habitId])
+}
+
+model DayMetric {
+  userId   String
+  date     DateTime
+  metricId String
+  value    Float
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, date, metricId])
+}
+
+model Note {
+  id        String   @id @default(cuid())
+  userId    String
+  date      DateTime
+  text      String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, date])
+}
+
+model InboxItem {
+  id        String   @id @default(cuid())
+  userId    String
+  text      String
+  addedAt   DateTime @default(now())
+  done      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/* ---------- v11: screen time (Digital Wellbeing style) ---------- */
+
+/// One row = minutes an app consumed on a given day (per user).
+model ScreenEntry {
+  id        String   @id @default(cuid())
+  userId    String
+  date      DateTime // the day the screen time happened (UTC midnight)
+  appName   String // e.g. "Instagram"
+  category  String   @default("other") // social | work | entertainment | learning | health | other
+  minutes   Int      @default(0)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date, appName])
+  @@index([userId, date])
+}
