@@ -6,6 +6,32 @@ export function isoLocal(d: Date): string {
 export function todayStr(): string {
   return new Date().toISOString().slice(0, 10)
 }
+
+/**
+ * P1-5: resolve "today" in a user's timezone.
+ *
+ * v10.3 resolved every "today" as UTC, so in UTC+5:45 the day flipped at
+ * 05:45 local — morning check-ins landed on yesterday. `todayIn(tz)` uses
+ * Intl (dependency-free); 'en-CA' formats as YYYY-MM-DD directly.
+ * Invalid/unknown zones fall back to UTC rather than throwing.
+ */
+export function todayIn(tz: string | null | undefined, now: Date = new Date()): string {
+  if (!tz) return todayStr()
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(now)
+  } catch {
+    return todayStr()
+  }
+}
+
+/** The client's own IANA zone — reported to the server at boot (P1-5). */
+export function clientTz(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  } catch {
+    return 'UTC'
+  }
+}
 export function isoDaysAgo(n: number): string {
   const d = new Date()
   d.setUTCDate(d.getUTCDate() - n)
@@ -47,7 +73,11 @@ export function daysSince(s: string): number {
   return Math.round((s2d(todayStr()).getTime() - s2d(s).getTime()) / 86400000)
 }
 export function validDateStr(s: unknown): s is string {
-  return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(s2d(s).getTime())
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false
+  // Round-trip check: V8's date parser silently rolls impossible dates
+  // forward ('2026-02-30' → Mar 2, '2026-02-29' → Mar 1). Reject those —
+  // a typo must never silently land on the wrong day.
+  return d2s(s2d(s)) === s
 }
 export function validTimeStr(s: unknown): s is string {
   return typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s)

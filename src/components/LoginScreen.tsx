@@ -22,41 +22,43 @@ export default function LoginScreen() {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const [setup, setSetup] = useState<SetupStatus>({ initialized: false, loading: true })
-  const [resetToken, setResetToken] = useState<string | null>(null)
+  // v10: a ?reset=TOKEN in the URL drops the user straight into the reset flow.
+  // lint fix (react-hooks/set-state-in-effect): derive the initial state from
+  // the URL in lazy initializers instead of calling setState in an effect.
+  // This component renders client-side only (post-boot), so window is safe.
+  const [resetToken, setResetToken] = useState<string | null>(() =>
+    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('reset') : null,
+  )
   const [resetName, setResetName] = useState<string>('')
   const [resetStatus, setResetStatus] = useState<'verifying' | 'ready' | 'submitting' | 'done' | 'error'>('verifying')
 
-  // v10: check for ?reset=TOKEN in URL on mount
   useEffect(() => {
-    const url = new URL(window.location.href)
-    const token = url.searchParams.get('reset')
-    if (token) {
-      setResetToken(token)
-      setMode('reset')
-      setResetStatus('verifying')
-      fetch('/api/auth/reset-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'verify', token }),
-      })
-        .then((r) => r.json().catch(() => ({})))
-        .then((data: { valid?: boolean; name?: string; error?: string }) => {
-          if (data.valid && data.name) {
-            setResetName(data.name)
-            setResetStatus('ready')
-          } else {
-            setErr(data.error ?? 'invalid or expired reset link')
-            setResetStatus('error')
-          }
-        })
-        .catch(() => {
-          setErr('network error')
+    if (!resetToken) return
+    setMode('reset') // eslint-disable-line react-hooks/set-state-in-effect -- one-time mode switch on mount when arriving from an email link
+    fetch('/api/auth/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'verify', token: resetToken }),
+    })
+      .then((r) => r.json().catch(() => ({})))
+      .then((data: { valid?: boolean; name?: string; error?: string }) => {
+        if (data.valid && data.name) {
+          setResetName(data.name)
+          setResetStatus('ready')
+        } else {
+          setErr(data.error ?? 'invalid or expired reset link')
           setResetStatus('error')
-        })
-      // Clean the URL so the token doesn't linger in browser history
-      window.history.replaceState({}, document.title, url.pathname)
-    }
-  }, [])
+        }
+      })
+      .catch(() => {
+        setErr('network error')
+        setResetStatus('error')
+      })
+    // Clean the URL so the token doesn't linger in browser history
+    const url = new URL(window.location.href)
+    url.searchParams.delete('reset')
+    window.history.replaceState({}, document.title, url.pathname)
+  }, [resetToken])
 
   // Ask the server whether the DB is set up and how many users exist.
   // If zero users, default to signup mode (first user becomes admin).

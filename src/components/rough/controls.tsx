@@ -183,13 +183,15 @@ function RoughBarSvg({ w, h, frac, hex, fillStyle, tick }: { w: number; h: numbe
 /* ---------- bento cell background ---------- */
 export function RoughCell({ children, style, className }: { children: ReactNode; style?: CSSProperties; className?: string }) {
   const { ref, size } = useSize<HTMLDivElement>()
-  const seedRef = useRef(Math.floor(Math.random() * 999))
+  // lint fix (react-hooks/refs): a per-mount random seed is render state,
+  // not a ref — useState initializer keeps it stable without ref access.
+  const [seed] = useState(() => Math.floor(Math.random() * 999))
   const tick = useThemeTick()
   return (
     /* v11 fix: the padding is back — without it the cell's content sat flush
      * against the hand-drawn border and text collided with the strokes. */
     <div ref={ref} className={className} style={{ position: 'relative', padding: '14px 16px', borderRadius: 10, ...(style ?? {}) }}>
-      {size && size.w > 40 && size.h > 40 && <RoughCellSvg w={size.w} h={size.h} seed={seedRef.current} tick={tick} />}
+      {size && size.w > 40 && size.h > 40 && <RoughCellSvg w={size.w} h={size.h} seed={seed} tick={tick} />}
       <div style={{ position: 'relative', zIndex: 1 }}>{children}</div>
     </div>
   )

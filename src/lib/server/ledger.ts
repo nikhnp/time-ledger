@@ -12,16 +12,10 @@ import {
 import { generateId } from '@/lib/server/cuid'
 import type { MergeDelta, MergeResult } from '@/lib/types'
 
-/* ---------- date helpers (UTC-midnight discipline) ---------- */
-export function d2s(d: Date): string { return d.toISOString().slice(0, 10) }
-export function s2d(s: string): Date { return new Date(s + 'T00:00:00Z') }
-export function todayStr(): string { return new Date().toISOString().slice(0, 10) }
-export function validDateStr(s: unknown): s is string {
-  return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(s2d(s).getTime())
-}
-export function validTimeStr(s: unknown): s is string {
-  return typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s)
-}
+/* ---------- date helpers (single source: @/lib/dates — P1-5) ----------
+ * Re-exported for the routes that historically imported them from here. */
+import { d2s, s2d, todayStr, validDateStr, validTimeStr } from '@/lib/dates'
+export { d2s, s2d, todayStr, validDateStr, validTimeStr }
 
 /* ---------- assemble the full ledger for a user ---------- */
 /**

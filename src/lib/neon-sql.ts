@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { d2s, todayStr } from '@/lib/dates'
 import type { Ledger, DayT } from '@/lib/types'
 
 /**
@@ -163,14 +164,6 @@ function parseJson<T>(raw: string | null | undefined, fallback: T): T {
   } catch {
     return fallback
   }
-}
-
-function d2s(d: Date): string {
-  return d.toISOString().slice(0, 10)
-}
-
-function todayStr(): string {
-  return new Date().toISOString().slice(0, 10)
 }
 
 /* ============================================================
