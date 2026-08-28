@@ -31,7 +31,7 @@ export interface UserRow {
 }
 
 export interface SessionRow {
-  token: string
+  tokenHash: string
   userId: string
   expiresAt: Date
   createdAt: Date
@@ -262,15 +262,20 @@ export async function updateUser(params: {
  * SESSION
  * ============================================================ */
 
+/**
+ * P1-1c: only the SHA-256 hash of a session token is ever stored. Callers
+ * pass the raw token; it is hashed here at the single write path.
+ */
 export async function createSessionRow(params: {
   token: string
   userId: string
   expiresAt: Date
   impersonatedBy?: string | null
 }): Promise<void> {
+  const { hashToken } = await import('@/lib/server/auth')
   await db.session.create({
     data: {
-      token: params.token,
+      tokenHash: hashToken(params.token),
       userId: params.userId,
       expiresAt: params.expiresAt,
       impersonatedBy: params.impersonatedBy ?? null,
@@ -281,14 +286,15 @@ export async function createSessionRow(params: {
 export async function findSessionWithUser(
   token: string,
 ): Promise<{ session: SessionRow & { impersonatedBy?: string | null }; user: UserRow } | null> {
+  const { hashToken } = await import('@/lib/server/auth')
   const row = await db.session.findUnique({
-    where: { token },
+    where: { tokenHash: hashToken(token) },
     include: { user: true },
   })
   if (!row) return null
   return {
     session: {
-      token: row.token,
+      token: row.tokenHash, // callers only ever compare/inspect, never re-use this value
       userId: row.userId,
       expiresAt: row.expiresAt,
       createdAt: row.createdAt,
@@ -299,11 +305,18 @@ export async function findSessionWithUser(
 }
 
 export async function deleteSession(token: string): Promise<void> {
-  await db.session.deleteMany({ where: { token } })
+  const { hashToken } = await import('@/lib/server/auth')
+  await db.session.deleteMany({ where: { tokenHash: hashToken(token) } })
 }
 
-export async function deleteSessionsByUser(userId: string): Promise<void> {
-  await db.session.deleteMany({ where: { userId } })
+/**
+ * Delete all sessions of a user. P1-1d: `keepTokenHash` exempts one session
+ * (the current device) so a password change logs out everyone else only.
+ */
+export async function deleteSessionsByUser(userId: string, keepTokenHash?: string): Promise<void> {
+  await db.session.deleteMany({
+    where: keepTokenHash ? { userId, NOT: { tokenHash: keepTokenHash } } : { userId },
+  })
 }
 
 /* ============================================================

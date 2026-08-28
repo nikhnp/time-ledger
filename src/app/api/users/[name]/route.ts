@@ -13,7 +13,9 @@ export const dynamic = 'force-dynamic'
 
 /**
  * PATCH /api/users/[name]
- * Admin-only: grant / revoke admin, resetpw, kick.
+ * Admin-only: grant / revoke admin, kick.
+ * (v10.3's 'resetpw' action was removed in P1-1a — it set passwordHash to
+ * null, which made login accept ANY password for that user.)
  * v9: uses raw SQL.
  */
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ name: string }> }) {
@@ -41,15 +43,15 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ na
       if (admins <= 1) return jsonError(400, 'At least one admin required.')
       await updateUser({ id: user.id, role: 'member' })
       break
-    case 'resetpw':
-      await updateUser({ id: user.id, passwordHash: null, forceLogoutAt: null })
-      break
     case 'kick':
       await updateUser({ id: user.id, forceLogoutAt: new Date() })
       await deleteSessionsByUser(user.id)
       break
     default:
-      return jsonError(400, 'unknown action (grant | revoke | resetpw | kick)')
+      // P1-1a: 'resetpw' (set passwordHash = null) was REMOVED — a null hash
+      // used to let ANY password log in. Password resets go through the
+      // admin reset_link flow (admin/users/[id] → reset_link).
+      return jsonError(400, 'unknown action (grant | revoke | kick)')
   }
 
   return Response.json({ ledger: await assembleLedger(me.id) })

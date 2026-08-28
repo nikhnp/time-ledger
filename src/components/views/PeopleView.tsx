@@ -73,7 +73,9 @@ export default function PeopleView() {
                     ) : (
                       <RoughBtn className="btn-sm" disabled={admins >= 2} onClick={() => userAction(r.name, 'grant')}>Grant admin</RoughBtn>
                     )}
-                    <RoughBtn className="btn-sm" onClick={() => userAction(r.name, 'resetpw')}>Reset pw</RoughBtn>
+                    {/* P1-1a: the old "Reset pw" button (action 'resetpw') is gone —
+                        it nulled the password hash, letting ANY password log in.
+                        Use the admin panel's reset-link flow instead. */}
                     <RoughBtn className="btn-sm" onClick={() => userAction(r.name, 'kick')}>Force logout</RoughBtn>
                   </>
                 ) : (

@@ -22,9 +22,14 @@ model User {
   id            String    @id @default(cuid())
   name          String    @unique
   role          String    @default("member") // 'admin' | 'member'
-  passwordHash  String? // null = any password opens the book (prototype behavior)
+  // P1-1a: NOT NULL since the P1 hardening migration. v10.3 allowed null
+  // ("any password opens the book") — the root of the login bypass.
+  passwordHash  String
   forceLogoutAt DateTime? // sessions created before this are dead
   createdAt     DateTime  @default(now())
+  // P1-5: IANA timezone (e.g. "Asia/Kathmandu") — null = UTC. Resolves
+  // "today" for server-side date boundaries.
+  tz            String?
   // v10 additions:
   isActive              Boolean   @default(true) // false = deactivated by admin
   passwordResetToken    String? // hex token; null when not in reset flow
@@ -96,7 +101,9 @@ model AdminAction {
 }
 
 model Session {
-  token       String   @id
+  // P1-1c: SHA-256 of the raw cookie token — the raw token never touches
+  // the database. (Migration recreates this table; all users re-login once.)
+  tokenHash   String   @id
   userId      String
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt   DateTime @default(now())

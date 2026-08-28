@@ -1,12 +1,31 @@
 import { NextRequest } from 'next/server'
-import { findUserByName, createSessionRow, assembleLedgerRaw } from '@/lib/neon-sql'
-import { sessionCookieHeader, verifyPassword, jsonError } from '@/lib/server/auth'
+import {
+  findUserByName,
+  createSessionRow,
+  assembleLedgerRaw,
+} from '@/lib/neon-sql'
+import {
+  sessionCookieHeader,
+  verifyPassword,
+  burnPasswordCheck,
+  generateSessionToken,
+  jsonError,
+} from '@/lib/server/auth'
+import { limit, clientIp, POLICY } from '@/lib/server/rate-limit'
 
 export const dynamic = 'force-dynamic'
 
 /**
  * POST /api/auth/login
- * v9: uses raw Neon SQL. Returns REAL ledger.
+ * Body: { name, password }
+ *
+ * P1-1 hardening vs v10.3:
+ *  - a NULL passwordHash can never authenticate (was: any password accepted);
+ *    the column is NOT NULL since the P1 migration, this guard is the
+ *    application-level backstop.
+ *  - unknown username and wrong password return the SAME error + similar
+ *    timing (dummy scrypt run), so accounts can't be enumerated.
+ *  - rate limited per IP+username (5 / 15 min).
  */
 export async function POST(req: NextRequest) {
   let body: { name?: string; password?: string }
@@ -18,19 +37,30 @@ export async function POST(req: NextRequest) {
   if (!name) return jsonError(400, 'Whose book is this? Enter a username.')
   if (name.length < 2) return jsonError(400, 'Username must be at least 2 characters.')
   if (!pw) return jsonError(400, 'Need a password.')
-  if (pw.length < 6) return jsonError(400, 'Password must be at least 6 characters.')
+  // NOTE: no minimum-length check here — legacy accounts may have shorter
+  // passwords. Length policy applies where passwords are SET
+  // (signup / change / reset), never where they are verified.
+
+  // Rate limit before ANY database work so brute force stops at the door.
+  if (!(await limit(`login:${clientIp(req)}:${name.toLowerCase()}`, POLICY.login.max, POLICY.login.windowMs))) {
+    return jsonError(429, 'Too many attempts. Take a breath and try again in a few minutes.')
+  }
 
   try {
     const user = await findUserByName(name)
     if (!user) {
-      return jsonError(404, `No account named "${name}". Sign up to create one.`)
+      burnPasswordCheck()
+      return jsonError(401, "That password doesn't open this book.")
     }
-    if (user.passwordHash && !verifyPassword(pw, user.passwordHash)) {
+    // Defense-in-depth: the DB column is NOT NULL now, but never trust that alone.
+    if (!user.passwordHash) {
+      return jsonError(403, 'This book has no password set. Ask an admin for a reset link.')
+    }
+    if (!verifyPassword(pw, user.passwordHash)) {
       return jsonError(401, "That password doesn't open this book.")
     }
 
-    const { randomBytes } = await import('node:crypto')
-    const token = randomBytes(32).toString('hex')
+    const token = generateSessionToken()
     const expiresAt = new Date(Date.now() + 30 * 86400000)
     await createSessionRow({ token, userId: user.id, expiresAt })
 

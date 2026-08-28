@@ -1,7 +1,12 @@
 import { NextRequest } from 'next/server'
-import { getSessionUser, jsonError, sessionCookieHeader } from '@/lib/server/auth'
+import {
+  getSessionUser,
+  jsonError,
+  sessionCookieHeader,
+  readSessionToken,
+} from '@/lib/server/auth'
 import { deleteSession, findUserById, createSessionRow } from '@/lib/neon-sql'
-import { randomBytes } from 'node:crypto'
+import { generateSessionToken } from '@/lib/server/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -13,14 +18,14 @@ export const dynamic = 'force-dynamic'
  * signing back in.
  *
  * Flow:
- *   1. Read current session token from cookie
+ *   1. Read current session token from cookie (single shared reader — P1-1c)
  *   2. Look up session — should have `impersonatedBy` set to admin's user id
  *   3. Delete the impersonation session
  *   4. Create a fresh 30-day session for the admin (impersonatedBy = null)
  *   5. Return admin user info + set new session cookie
  *
- * If the current session isn't an impersonation session (impersonatedBy is null),
- * returns 400 — they're already on their own account.
+ * If the current session isn't an impersonation session (impersonatedBy is
+ * null), returns 400 — they're already on their own account.
  */
 export async function POST(req: NextRequest) {
   const me = await getSessionUser(req)
@@ -28,9 +33,7 @@ export async function POST(req: NextRequest) {
   if (!me.impersonatedBy) return jsonError(400, 'not currently impersonating anyone')
 
   // Read session token from cookie so we can delete it
-  const cookie = req.headers.get('cookie') ?? ''
-  const m = cookie.match(/(?:^|;\s*)ledger_session=([^;]+)/)
-  const currentToken = m ? decodeURIComponent(m[1]) : null
+  const currentToken = readSessionToken(req)
   if (currentToken) {
     await deleteSession(currentToken).catch(() => {})
   }
@@ -41,7 +44,7 @@ export async function POST(req: NextRequest) {
   if (!admin.isActive) return jsonError(403, 'admin account has been deactivated')
 
   // Create fresh session for the admin
-  const sessionToken = randomBytes(32).toString('hex')
+  const sessionToken = generateSessionToken()
   const expiresAt = new Date(Date.now() + 30 * 86400000)
   await createSessionRow({
     token: sessionToken,

@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { createUser, findUserByName, countUsers, createSessionRow, assembleLedgerRaw, createGoal, createHabit } from '@/lib/neon-sql'
-import { hashPassword, sessionCookieHeader, jsonError } from '@/lib/server/auth'
+import { hashPassword, sessionCookieHeader, generateSessionToken, jsonError } from '@/lib/server/auth'
+import { limit, clientIp, POLICY } from '@/lib/server/rate-limit'
 import { generateId } from '@/lib/server/cuid'
 
 export const dynamic = 'force-dynamic'
@@ -18,12 +19,16 @@ async function seedStarterCatalog(userId: string) {
 
 /**
  * POST /api/auth/signup
- * Body: { name: string, password: string }
+ * Body: { name: string, password: string, inviteCode?: string }
  *
- * v9: uses raw Neon SQL. Returns REAL ledger (now that assembleLedger works).
+ * P1-1d hardening vs v10.3:
+ *  - password minimum 8 chars (was 6)
+ *  - rate limited per IP (3 / hour)
+ *  - if SIGNUP_INVITE_CODE is set, the body must carry it — open signup
+ *    stays the default when the variable is unset.
  */
 export async function POST(req: NextRequest) {
-  let body: { name?: string; password?: string }
+  let body: { name?: string; password?: string; inviteCode?: string }
   try { body = await req.json() } catch { return jsonError(400, 'Invalid request body.') }
 
   const name = String(body.name ?? '').trim()
@@ -35,7 +40,16 @@ export async function POST(req: NextRequest) {
   if (!/^[a-zA-Z0-9 _.-]+$/.test(name))
     return jsonError(400, 'Username may only contain letters, numbers, spaces, ., _, or -.')
   if (!pw) return jsonError(400, 'Pick a password.')
-  if (pw.length < 6) return jsonError(400, 'Password must be at least 6 characters.')
+  if (pw.length < 8) return jsonError(400, 'Password must be at least 8 characters.')
+
+  const inviteCode = process.env.SIGNUP_INVITE_CODE
+  if (inviteCode && String(body.inviteCode ?? '') !== inviteCode) {
+    return jsonError(403, 'This book is invite-only right now.')
+  }
+
+  if (!(await limit(`signup:${clientIp(req)}`, POLICY.signup.max, POLICY.signup.windowMs))) {
+    return jsonError(429, 'Too many signups from this address. Try again later.')
+  }
 
   try {
     const existing = await findUserByName(name)
@@ -54,9 +68,8 @@ export async function POST(req: NextRequest) {
       passwordHash,
     })
 
-    // Create session via raw SQL
-    const { randomBytes } = await import('node:crypto')
-    const token = randomBytes(32).toString('hex')
+    // Create session (token is hashed before storage since P1-1c)
+    const token = generateSessionToken()
     const expiresAt = new Date(Date.now() + 30 * 86400000)
     await createSessionRow({ token, userId: user.id, expiresAt })
 
