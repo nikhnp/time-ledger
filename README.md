@@ -1,3 +1,15 @@
+# Ledger v10.4.0-p1 — Phase 1: Safety & Integrity
+
+> **Start here: [`docs/PHASE1-RUNBOOK.md`](docs/PHASE1-RUNBOOK.md)** — deploy
+> checklist, what changed, and emergency procedures.
+>
+> Phase 1 hardened auth (null-password bypass closed, session tokens hashed,
+> rate limits, AES-GCM key encryption), made all multi-step writes
+> transactional, added Prisma migrations (the build self-baselines an
+> existing `db push` database), fixed the UTC-"today" bug, added a test
+> harness (`npm test`), and removed ~40 dead dependencies (bun → npm/node).
+> All users are logged out exactly once by the migration — announce it.
+
 # Ledger v10.3 — Comprehensive Contrast Fixes + Settings Cleanup
 
 ## TL;DR
