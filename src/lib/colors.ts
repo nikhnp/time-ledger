@@ -39,14 +39,15 @@ export function hashStr(s: string): number {
   return h >>> 0
 }
 
-export function goalCat(goalId: string, color?: string | null): Cat {
+export function goalCat(goalId: string | null | undefined, color?: string | null): Cat {
   if (color && /^#[0-9a-fA-F]{6}$/.test(color)) {
     return { hex: color, fs: 'hachure' }
   }
-  const known = CATS[goalId]
+  const gid = goalId ?? '' // activities may be unfiled (null goalId) — stable palette slot
+  const known = CATS[gid]
   if (known) return { hex: chartHex(known.chart), fs: known.fs }
-  const idx = hashStr(goalId) % 7
-  return { hex: chartHex(idx + 1), fs: FILL_STYLES[hashStr(goalId + 'fs') % FILL_STYLES.length] }
+  const idx = hashStr(gid) % 7
+  return { hex: chartHex(idx + 1), fs: FILL_STYLES[hashStr(gid + 'fs') % FILL_STYLES.length] }
 }
 
 export function habitColor(habitId: string, color?: string | null): string {

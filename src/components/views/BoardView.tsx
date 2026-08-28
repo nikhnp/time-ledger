@@ -37,7 +37,7 @@ function Card({ task, goalId, goalName }: { task: { id: string; label: string; s
     >
       <div className="k-top">
         <span className="k-label">{task.label}</span>
-        <span className="k-actions" {...undefined}>
+        <span className="k-actions">
           <button
             className="icon-btn"
             onClick={(e) => { e.stopPropagation(); updateTask(task.id, { status: STATUS_ORDER[(STATUS_ORDER.indexOf(task.status as TaskStatus) + 1) % 3] }) }}

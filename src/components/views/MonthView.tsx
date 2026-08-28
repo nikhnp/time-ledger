@@ -34,11 +34,11 @@ export default function MonthView() {
   const stats = useMemo(() => {
     const total = md.reduce((s, d) => s + d.activities.reduce((x, a) => x + a.hours, 0), 0)
     const tracked = md.filter((d) => d.activities.length).length
-    let best: { h: number; d: typeof md[number] } | null = null
-    md.forEach((d) => {
+    let best: { h: number; d: (typeof md)[number] } | null = null
+    for (const d of md) {
       const h = d.activities.reduce((s, a) => s + a.hours, 0)
       if (!best || h > best.h) best = { h, d }
-    })
+    }
     const byGoal: Record<string, number> = {}
     md.forEach((d) => d.activities.forEach((a) => { byGoal[a.goalId ?? 'none'] = (byGoal[a.goalId ?? 'none'] ?? 0) + a.hours }))
     return { total, tracked, best, byGoal }

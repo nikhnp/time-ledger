@@ -508,7 +508,8 @@ export const useLedger = create<LedgerStore>((set, get) => ({
   async fetchDockConfig() {
     const r = await api<{ config: DockConfigT }>('/api/settings/dock')
     if (r.ok) {
-      set({ dockConfig: r.data.config, dockOptional: r.data.config.keepInDock.slice(0, 2) })
+      // keepInDock arrives as JSON (string[]) — narrow to the first two ViewIds
+      set({ dockConfig: r.data.config, dockOptional: r.data.config.keepInDock.slice(0, 2) as ViewId[] })
     }
   },
 
@@ -518,7 +519,7 @@ export const useLedger = create<LedgerStore>((set, get) => ({
       body: JSON.stringify(config),
     })
     if (!r.ok) return r.error
-    set({ dockConfig: r.data.config, dockOptional: r.data.config.keepInDock.slice(0, 2) })
+    set({ dockConfig: r.data.config, dockOptional: r.data.config.keepInDock.slice(0, 2) as ViewId[] })
     return null
   },
 

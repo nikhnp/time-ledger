@@ -42,7 +42,10 @@ export default function WeekView() {
     const weekTotal = totals.reduce((a, b) => a + b, 0)
     const active = totals.filter((t) => t > 0).length
     let best: { h: number; d: DayT } | null = null
-    days.forEach((d, i) => { if (d && totals[i] > 0 && (!best || totals[i] > best.h)) best = { h: totals[i], d } })
+    for (let i = 0; i < days.length; i++) {
+      const d = days[i]
+      if (d && totals[i] > 0 && (!best || totals[i] > best.h)) best = { h: totals[i], d }
+    }
     let habitHits = 0
     ledger.habits.forEach((h) => dates.forEach((ds) => { if (habitDoneOn(ledger, h.id, ds)) habitHits++ }))
     // v10.3 fix: guard against division by zero when no habits exist

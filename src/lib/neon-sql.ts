@@ -294,7 +294,7 @@ export async function findSessionWithUser(
   if (!row) return null
   return {
     session: {
-      token: row.tokenHash, // callers only ever compare/inspect, never re-use this value
+      tokenHash: row.tokenHash, // never the raw token — P1-1c
       userId: row.userId,
       expiresAt: row.expiresAt,
       createdAt: row.createdAt,
@@ -804,31 +804,43 @@ export interface LlmSettingRow {
   updatedAt: Date
 }
 
-/** Simple XOR-based obfuscation for API keys at rest. Not cryptographic, but
- * prevents casual exposure in DB dumps. For real production, swap to AES-GCM
- * with a key from env vars. */
-const XOR_KEY = process.env.LLM_KEY_OBFUSCATION_SECRET ?? 'ledger-v10-default-obfuscation-key'
-function xorEncrypt(text: string): string {
-  const buf = Buffer.from(text, 'utf8')
-  const keyBuf = Buffer.from(XOR_KEY, 'utf8')
-  for (let i = 0; i < buf.length; i++) buf[i] ^= keyBuf[i % keyBuf.length]
-  return buf.toString('base64')
-}
-function xorDecrypt(cipherB64: string): string {
-  try {
-    const buf = Buffer.from(cipherB64, 'base64')
-    const keyBuf = Buffer.from(XOR_KEY, 'utf8')
-    for (let i = 0; i < buf.length; i++) buf[i] ^= keyBuf[i % keyBuf.length]
-    return buf.toString('utf8')
-  } catch {
-    return ''
-  }
-}
+/**
+ * API keys at rest (P1-1e): AES-256-GCM via src/lib/server/crypto.ts,
+ * keyed by LLM_ENCRYPTION_KEY. v10.3's XOR obfuscation (hardcoded fallback
+ * key) is gone; legacy blobs are migrated once by the admin maintenance
+ * route POST /api/admin/maintenance { job: 'reencrypt-llm-keys' }.
+ */
+import { encryptSecret, decryptSecret, legacyXorDecrypt } from '@/lib/server/crypto'
 
 export function maskApiKey(key: string): string {
   if (!key) return ''
   if (key.length <= 8) return '****'
   return `${key.slice(0, 4)}…${key.slice(-4)}`
+}
+
+/**
+ * Decrypt a stored key with legacy tolerance:
+ * - `v2:` blobs → AES-256-GCM
+ * - legacy XOR blobs → decrypted via the old scheme (and re-encrypted by
+ *   the maintenance job). Throws only if a legacy blob exists AND the old
+ *   obfuscation secret differs — surfaced as "key unreadable" in the UI.
+ */
+function decryptStoredKey(stored: string): string {
+  if (stored.startsWith('v2:')) return decryptSecret(stored)
+  return legacyXorDecrypt(stored)
+}
+
+/**
+ * For UI display only: decrypt a stored key just enough to mask it.
+ * Never throws — unreadable keys (e.g. rotated LLM_ENCRYPTION_KEY) show as
+ * "(unreadable — re-enter)" instead of crashing settings.
+ */
+export function maskStoredApiKey(stored: string): string {
+  try {
+    return maskApiKey(decryptStoredKey(stored))
+  } catch {
+    return '(unreadable — re-enter)'
+  }
 }
 
 /** Get all system-wide LLM settings (sorted by priority asc). */
@@ -879,14 +891,14 @@ export async function resolveLlmChain(userId: string): Promise<Array<{
     if (!s.enabled) continue
     chain.push({
       id: s.id, priority: s.priority, provider: s.provider, model: s.model,
-      apiKey: xorDecrypt(s.apiKey), baseUrl: s.baseUrl, source: 'user',
+      apiKey: decryptStoredKey(s.apiKey), baseUrl: s.baseUrl, source: 'user',
     })
   }
   for (const s of systemSettings) {
     if (!s.enabled) continue
     chain.push({
       id: s.id, priority: s.priority + 1000, provider: s.provider, model: s.model,
-      apiKey: xorDecrypt(s.apiKey), baseUrl: s.baseUrl, source: 'system',
+      apiKey: decryptStoredKey(s.apiKey), baseUrl: s.baseUrl, source: 'system',
     })
   }
   return chain.sort((a, b) => a.priority - b.priority)
@@ -909,7 +921,7 @@ export async function createLlmSetting(params: {
       priority: params.priority,
       provider: params.provider,
       model: params.model,
-      apiKey: xorEncrypt(params.apiKey),
+      apiKey: encryptSecret(params.apiKey),
       baseUrl: params.baseUrl,
       enabled: params.enabled,
     },
@@ -931,7 +943,7 @@ export async function updateLlmSetting(
   if (patch.priority !== undefined) data.priority = patch.priority
   if (patch.provider !== undefined) data.provider = patch.provider
   if (patch.model !== undefined) data.model = patch.model
-  if (patch.apiKey !== undefined) data.apiKey = xorEncrypt(patch.apiKey)
+  if (patch.apiKey !== undefined) data.apiKey = encryptSecret(patch.apiKey)
   if (patch.baseUrl !== undefined) data.baseUrl = patch.baseUrl
   if (patch.enabled !== undefined) data.enabled = patch.enabled
   await db.llmSetting.update({ where: { id }, data })
@@ -1180,7 +1192,11 @@ export async function exportUserPayload(userId: string): Promise<UserBackupPaylo
 export async function restoreUserPayload(userId: string, payload: UserBackupPayload): Promise<void> {
   await deleteUserAndAllDataExceptUser(userId)
 
-  // Re-insert user row (preserves the same id)
+  // Re-insert user row (preserves the same id). P1-1a: passwordHash is NOT
+  // NULL now, and backup payloads deliberately exclude it — set an unusable
+  // hash; the admin sends a reset link for the user to set a new password.
+  const { hashPassword } = await import('@/lib/server/auth')
+  const { randomBytes } = await import('node:crypto')
   await db.user.upsert({
     where: { id: payload.user.id },
     create: {
@@ -1189,6 +1205,7 @@ export async function restoreUserPayload(userId: string, payload: UserBackupPayl
       role: payload.user.role,
       createdAt: new Date(payload.user.createdAt),
       isActive: true,
+      passwordHash: hashPassword(randomBytes(32).toString('hex')),
     },
     update: { name: payload.user.name, role: payload.user.role },
   })

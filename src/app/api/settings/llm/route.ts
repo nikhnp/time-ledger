@@ -7,6 +7,7 @@ import {
   updateLlmSetting,
   deleteLlmSetting,
   maskApiKey,
+  maskStoredApiKey,
 } from '@/lib/neon-sql'
 import { generateId } from '@/lib/server/cuid'
 import type { LlmConfigClientT } from '@/lib/types'
@@ -25,7 +26,7 @@ export async function GET(req: NextRequest) {
     priority: r.priority,
     provider: r.provider,
     model: r.model,
-    apiKeyMasked: maskApiKey(decrypt(r.apiKey)),
+    apiKeyMasked: maskStoredApiKey(r.apiKey),
     baseUrl: r.baseUrl,
     enabled: r.enabled,
     isSystem: true,
@@ -150,17 +151,5 @@ export async function PUT(req: NextRequest) {
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err)
     return jsonError(500, `LLM test failed: ${raw}`)
-  }
-}
-
-// Decrypt helper — kept inline since neon-sql doesn't export it
-function decrypt(cipherB64: string): string {
-  try {
-    const buf = Buffer.from(cipherB64, 'base64')
-    const keyBuf = Buffer.from(process.env.LLM_KEY_OBFUSCATION_SECRET ?? 'ledger-v10-default-obfuscation-key', 'utf8')
-    for (let i = 0; i < buf.length; i++) buf[i] ^= keyBuf[i % keyBuf.length]
-    return buf.toString('utf8')
-  } catch {
-    return ''
   }
 }

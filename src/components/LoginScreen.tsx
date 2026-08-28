@@ -8,9 +8,9 @@ import { I } from '@/components/Icon'
 type Mode = 'signin' | 'signup' | 'reset'
 
 type SetupStatus =
-  | { initialized: true; userCount: number }
-  | { initialized: false; error: string }
-  | { initialized: false; loading: true }
+  | { initialized: true; userCount: number; loading?: false; error?: undefined }
+  | { initialized: false; error: string; loading?: false }
+  | { initialized: false; loading: true; error?: undefined }
 
 export default function LoginScreen() {
   const login = useLedger((s) => s.login)
