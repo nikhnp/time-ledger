@@ -52,6 +52,7 @@ export interface SessionUser {
   id: string
   name: string
   role: Role
+  tz: string | null // P1-5: IANA timezone for resolving the user's "today"
   impersonatedBy?: string | null // v10: admin's user id, when impersonating
 }
 
@@ -99,6 +100,7 @@ export async function getSessionUser(req: Request): Promise<SessionUser | null> 
     id: user.id,
     name: user.name,
     role: user.role === 'admin' ? 'admin' : 'member',
+    tz: user.tz,
     impersonatedBy: session.impersonatedBy ?? null,
   }
 }

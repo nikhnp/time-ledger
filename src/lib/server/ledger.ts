@@ -9,6 +9,7 @@ import {
   upsertDayMetric,
   createNote,
 } from '@/lib/neon-sql'
+import { db } from '@/lib/db'
 import { generateId } from '@/lib/server/cuid'
 import type { MergeDelta, MergeResult } from '@/lib/types'
 
@@ -29,11 +30,17 @@ export async function assembleLedger(userId: string): Promise<ReturnType<typeof 
 /* ---------- the merge contract, server-side ----------
  * activities append (same goal/day = hours add), habits/metrics set per-key,
  * checkIn/highlight replace, notes append. Nothing is ever deleted. */
-export async function applyMergeDelta(userId: string, raw: MergeDelta): Promise<MergeResult> {
+export async function applyMergeDelta(
+  userId: string,
+  raw: MergeDelta,
+  opts?: { today?: string },
+): Promise<MergeResult> {
   const skipped: string[] = []
   const counts = { activities: 0, habits: 0, metrics: 0, notes: 0, highlight: 0, checkIn: 0 }
 
-  const date = validDateStr(raw.date) ? raw.date : todayStr()
+  // P1-5: callers that know the user's zone pass it via opts.today so an
+  // omitted date lands on the user's local day, not UTC's.
+  const date = validDateStr(raw.date) ? raw.date : (opts?.today ?? todayStr())
   const dayDate = s2d(date)
 
   /* resolve activities against known goals (fuzzy) */
@@ -94,7 +101,9 @@ export async function applyMergeDelta(userId: string, raw: MergeDelta): Promise<
     metricRows.push({ metricId: mt.id, value: +m.value.toFixed(1) })
   }
 
-  /* apply — day first (upsert) */
+  /* apply — ONE transaction (P1-4): v10.3 wrote day, activities, habits,
+   * metrics and notes as separate awaits; a mid-way failure left partial
+   * days. Now everything below commits together or not at all. */
   const highlight = typeof raw.highlight === 'string' && raw.highlight.trim() ? raw.highlight.trim().slice(0, 200) : null
   const checkIn =
     raw.checkIn && typeof raw.checkIn === 'object' && String(raw.checkIn.answer ?? '').trim()
@@ -105,43 +114,48 @@ export async function applyMergeDelta(userId: string, raw: MergeDelta): Promise<
   if (highlight) { patch.highlight = highlight; counts.highlight = 1 }
   if (checkIn) { patch.checkIn = checkIn; counts.checkIn = 1 }
 
-  await upsertDay(userId, dayDate, patch)
+  await db.$transaction(async (tx) => {
+    await upsertDay(userId, dayDate, patch, tx)
 
-  if (activities.length) {
-    for (const a of activities) {
-      await createActivity({
-        id: generateId(),
-        userId,
-        date: dayDate,
-        goalId: a.goalId,
-        hours: a.hours,
-        start: a.start,
-        end: a.end,
-        label: a.label,
-      })
+    if (activities.length) {
+      for (const a of activities) {
+        await createActivity(
+          {
+            id: generateId(),
+            userId,
+            date: dayDate,
+            goalId: a.goalId,
+            hours: a.hours,
+            start: a.start,
+            end: a.end,
+            label: a.label,
+          },
+          tx,
+        )
+      }
+      counts.activities = activities.length
     }
-    counts.activities = activities.length
-  }
 
-  for (const h of habitRows) {
-    await upsertDayHabit(userId, dayDate, h.habitId, h.done)
-    counts.habits++
-  }
-
-  for (const m of metricRows) {
-    await upsertDayMetric(userId, dayDate, m.metricId, m.value)
-    counts.metrics++
-  }
-
-  const newNotes = (raw.newNotes ?? [])
-    .map((n) => (typeof n === 'string' ? n.trim().slice(0, 300) : ''))
-    .filter(Boolean)
-  if (newNotes.length) {
-    for (const text of newNotes) {
-      await createNote({ id: generateId(), userId, date: dayDate, text })
+    for (const h of habitRows) {
+      await upsertDayHabit(userId, dayDate, h.habitId, h.done, tx)
+      counts.habits++
     }
-    counts.notes = newNotes.length
-  }
+
+    for (const m of metricRows) {
+      await upsertDayMetric(userId, dayDate, m.metricId, m.value, tx)
+      counts.metrics++
+    }
+
+    const newNotes = (raw.newNotes ?? [])
+      .map((n) => (typeof n === 'string' ? n.trim().slice(0, 300) : ''))
+      .filter(Boolean)
+    if (newNotes.length) {
+      for (const text of newNotes) {
+        await createNote({ id: generateId(), userId, date: dayDate, text }, tx)
+      }
+      counts.notes = newNotes.length
+    }
+  })
 
   return { counts, skipped }
 }

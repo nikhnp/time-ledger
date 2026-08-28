@@ -28,11 +28,12 @@ export const dynamic = 'force-dynamic'
  *  - rate limited per IP+username (5 / 15 min).
  */
 export async function POST(req: NextRequest) {
-  let body: { name?: string; password?: string }
+  let body: { name?: string; password?: string; tz?: string }
   try { body = await req.json() } catch { return jsonError(400, 'Invalid request body.') }
 
   const name = String(body.name ?? '').trim()
   const pw = String(body.password ?? '')
+  const tz = typeof body.tz === 'string' ? body.tz.trim().slice(0, 64) : ''
 
   if (!name) return jsonError(400, 'Whose book is this? Enter a username.')
   if (name.length < 2) return jsonError(400, 'Username must be at least 2 characters.')
@@ -58,6 +59,15 @@ export async function POST(req: NextRequest) {
     }
     if (!verifyPassword(pw, user.passwordHash)) {
       return jsonError(401, "That password doesn't open this book.")
+    }
+
+    // P1-5: keep the user's timezone fresh on every login (best-effort)
+    if (tz) {
+      try {
+        new Intl.DateTimeFormat('en-CA', { timeZone: tz })
+        const { updateUser } = await import('@/lib/neon-sql')
+        await updateUser({ id: user.id, tz })
+      } catch { /* unknown zone — ignore, boot will retry */ }
     }
 
     const token = generateSessionToken()

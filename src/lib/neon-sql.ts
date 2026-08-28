@@ -1,6 +1,15 @@
 import { db } from '@/lib/db'
 import { d2s, todayStr } from '@/lib/dates'
 import type { Ledger, DayT } from '@/lib/types'
+import type { Prisma } from '@prisma/client'
+
+/**
+ * P1-4: write helpers accept an optional transactional client so
+ * multi-step flows (merge, restore, delete) run atomically:
+ *   await db.$transaction(async (tx) => { await upsertDay(..., tx); ... })
+ * Defaults to the shared singleton when called outside a transaction.
+ */
+export type Client = Prisma.TransactionClient | typeof db
 
 /**
  * Data access layer — Prisma Client over SQLite.
@@ -26,6 +35,7 @@ export interface UserRow {
   forceLogoutAt: Date | null
   createdAt: Date
   isActive: boolean
+  tz: string | null // P1-5: IANA timezone, null = UTC
   passwordResetToken: string | null
   passwordResetExpires: Date | null
   dockConfig: unknown // { enabled: string[], keepInDock: string[] }
@@ -181,6 +191,7 @@ function toUserRow(u: UserRecord): UserRow {
     forceLogoutAt: u.forceLogoutAt,
     createdAt: u.createdAt,
     isActive: u.isActive,
+    tz: u.tz,
     passwordResetToken: u.passwordResetToken,
     passwordResetExpires: u.passwordResetExpires,
     dockConfig: parseJson<unknown>(u.dockConfig, null),
@@ -235,6 +246,7 @@ export async function updateUser(params: {
   passwordHash?: string | null
   forceLogoutAt?: Date | null
   isActive?: boolean
+  tz?: string | null // P1-5
   passwordResetToken?: string | null
   passwordResetExpires?: Date | null
   dockConfig?: unknown
@@ -244,6 +256,7 @@ export async function updateUser(params: {
   if (params.passwordHash !== undefined) data.passwordHash = params.passwordHash
   if (params.forceLogoutAt !== undefined) data.forceLogoutAt = params.forceLogoutAt
   if (params.isActive !== undefined) data.isActive = params.isActive
+  if (params.tz !== undefined) data.tz = params.tz
   if (params.passwordResetToken !== undefined) data.passwordResetToken = params.passwordResetToken
   if (params.passwordResetExpires !== undefined) data.passwordResetExpires = params.passwordResetExpires
   if (params.dockConfig !== undefined) data.dockConfig = JSON.stringify(params.dockConfig)
@@ -545,8 +558,9 @@ export async function upsertDayHabit(
   date: Date,
   habitId: string,
   done: boolean,
+  c: Client = db,
 ): Promise<void> {
-  await db.dayHabit.upsert({
+  await c.dayHabit.upsert({
     where: { userId_date_habitId: { userId, date, habitId } },
     create: { userId, date, habitId, done },
     update: { done },
@@ -561,16 +575,17 @@ export async function upsertDay(
   userId: string,
   date: Date,
   patch: { highlight?: string | null; checkIn?: object | null },
+  c: Client = db,
 ): Promise<void> {
   const data: Record<string, unknown> = {}
   if (patch.highlight) data.highlight = patch.highlight
   if (patch.checkIn) data.checkIn = JSON.stringify(patch.checkIn)
   if (Object.keys(data).length === 0) {
     // ensure the day exists even with no content
-    await db.day.upsert({ where: { userId_date: { userId, date } }, create: { userId, date }, update: {} })
+    await c.day.upsert({ where: { userId_date: { userId, date } }, create: { userId, date }, update: {} })
     return
   }
-  await db.day.upsert({
+  await c.day.upsert({
     where: { userId_date: { userId, date } },
     create: { userId, date, ...data },
     update: data,
@@ -586,8 +601,9 @@ export async function upsertDayMetric(
   date: Date,
   metricId: string,
   value: number,
+  c: Client = db,
 ): Promise<void> {
-  await db.dayMetric.upsert({
+  await c.dayMetric.upsert({
     where: { userId_date_metricId: { userId, date, metricId } },
     create: { userId, date, metricId, value },
     update: { value },
@@ -598,17 +614,20 @@ export async function upsertDayMetric(
  * ACTIVITY
  * ============================================================ */
 
-export async function createActivity(params: {
-  id: string
-  userId: string
-  date: Date
-  goalId: string | null
-  hours: number
-  start: string | null
-  end: string | null
-  label: string | null
-}): Promise<void> {
-  await db.activity.create({ data: params })
+export async function createActivity(
+  params: {
+    id: string
+    userId: string
+    date: Date
+    goalId: string | null
+    hours: number
+    start: string | null
+    end: string | null
+    label: string | null
+  },
+  c: Client = db,
+): Promise<void> {
+  await c.activity.create({ data: params })
 }
 
 export async function findActivitiesByUserAndDateRange(
@@ -633,13 +652,16 @@ export async function findLastActivityDateByUser(
  * NOTE
  * ============================================================ */
 
-export async function createNote(params: {
-  id: string
-  userId: string
-  date: Date
-  text: string
-}): Promise<void> {
-  await db.note.create({ data: params })
+export async function createNote(
+  params: {
+    id: string
+    userId: string
+    date: Date
+    text: string
+  },
+  c: Client = db,
+): Promise<void> {
+  await c.note.create({ data: params })
 }
 
 export async function findNoteByUserAndId(
@@ -1089,24 +1111,15 @@ export async function findAllBackups(): Promise<Array<{
  * ============================================================ */
 
 export async function deleteUserAndAllData(userId: string): Promise<void> {
-  await db.screenEntry.deleteMany({ where: { userId } })
-  await db.dayHabit.deleteMany({ where: { userId } })
-  await db.dayMetric.deleteMany({ where: { userId } })
-  await db.activity.deleteMany({ where: { userId } })
-  await db.day.deleteMany({ where: { userId } })
-  await db.note.deleteMany({ where: { userId } })
-  await db.inboxItem.deleteMany({ where: { userId } })
-  await db.importantDate.deleteMany({ where: { userId } })
-  await db.task.deleteMany({ where: { userId } })
-  await db.goal.deleteMany({ where: { userId } })
-  await db.habit.deleteMany({ where: { userId } })
-  await db.metric.deleteMany({ where: { userId } })
-  await db.session.deleteMany({ where: { userId } })
-  await db.llmSetting.deleteMany({ where: { userId } })
-  // audit rows reference users via required relations — drop them first
-  await db.adminAction.deleteMany({ where: { OR: [{ actorId: userId }, { targetId: userId }] } })
-  await db.userBackup.deleteMany({ where: { userId } })
-  await db.user.deleteMany({ where: { id: userId } })
+  // P1-4: atomic — either the user and every dependent row goes, or nothing does.
+  await db.$transaction(async (tx) => {
+    await deleteUserAndAllDataExceptUser(userId, tx)
+    await tx.llmSetting.deleteMany({ where: { userId } })
+    // audit rows reference users via required relations — drop them first
+    await tx.adminAction.deleteMany({ where: { OR: [{ actorId: userId }, { targetId: userId }] } })
+    await tx.userBackup.deleteMany({ where: { userId } })
+    await tx.user.deleteMany({ where: { id: userId } })
+  })
 }
 
 /* ============================================================
@@ -1181,137 +1194,144 @@ export async function exportUserPayload(userId: string): Promise<UserBackupPaylo
   }
 }
 
-/** Restore a user's data from a backup payload. Wipes existing data first. */
+/**
+ * Restore a user's data from a backup payload. P1-4: the wipe AND every
+ * upsert run in ONE transaction — a corrupt payload can no longer leave the
+ * account wiped-but-unfinished. (v10.3 wiped first, then wrote row by row.)
+ */
 export async function restoreUserPayload(userId: string, payload: UserBackupPayload): Promise<void> {
-  await deleteUserAndAllDataExceptUser(userId)
-
   // Re-insert user row (preserves the same id). P1-1a: passwordHash is NOT
   // NULL now, and backup payloads deliberately exclude it — set an unusable
   // hash; the admin sends a reset link for the user to set a new password.
   const { hashPassword } = await import('@/lib/server/auth')
   const { randomBytes } = await import('node:crypto')
-  await db.user.upsert({
-    where: { id: payload.user.id },
-    create: {
-      id: payload.user.id,
-      name: payload.user.name,
-      role: payload.user.role,
-      createdAt: new Date(payload.user.createdAt),
-      isActive: true,
-      passwordHash: hashPassword(randomBytes(32).toString('hex')),
-    },
-    update: { name: payload.user.name, role: payload.user.role },
-  })
 
-  for (const g of payload.goals) {
-    await db.goal.upsert({
-      where: { userId_id: { userId: g.userId, id: g.id } },
+  await db.$transaction(async (tx) => {
+    await deleteUserAndAllDataExceptUser(userId, tx)
+
+    await tx.user.upsert({
+      where: { id: payload.user.id },
       create: {
-        userId: g.userId, id: g.id, name: g.name, unit: g.unit, target: g.target,
-        deadline: g.deadline ? new Date(g.deadline) : null,
-        weeklyTargetHours: g.weeklyTargetHours, color: g.color, sortOrder: g.sortOrder,
-        milestones: JSON.stringify(g.milestones ?? []),
+        id: payload.user.id,
+        name: payload.user.name,
+        role: payload.user.role,
+        createdAt: new Date(payload.user.createdAt),
+        isActive: true,
+        passwordHash: hashPassword(randomBytes(32).toString('hex')),
       },
-      update: { name: g.name, unit: g.unit, target: g.target },
+      update: { name: payload.user.name, role: payload.user.role },
     })
-  }
-  for (const t of payload.tasks) {
-    await db.task.upsert({
-      where: { id: t.id },
-      create: {
-        id: t.id, userId: t.userId, goalId: t.goalId, label: t.label, status: t.status,
-        priority: t.priority, urgent: t.urgent, important: t.important,
-        lastTouched: new Date(t.lastTouched),
-      },
-      update: { label: t.label, status: t.status },
-    })
-  }
-  for (const h of payload.habits) {
-    await db.habit.upsert({
-      where: { userId_id: { userId: h.userId, id: h.id } },
-      create: h,
-      update: { name: h.name, targetPerWeek: h.targetPerWeek },
-    })
-  }
-  for (const m of payload.metrics) {
-    await db.metric.upsert({
-      where: { userId_id: { userId: m.userId, id: m.id } },
-      create: m,
-      update: { name: m.name },
-    })
-  }
-  for (const d of payload.importantDates) {
-    await db.importantDate.upsert({
-      where: { id: d.id },
-      create: { id: d.id, userId: d.userId, label: d.label, date: new Date(d.date), type: d.type, repeatsAnnually: d.repeatsAnnually },
-      update: {},
-    })
-  }
-  for (const d of payload.days) {
-    await db.day.upsert({
-      where: { userId_date: { userId: d.userId, date: new Date(d.date) } },
-      create: { userId: d.userId, date: new Date(d.date), highlight: d.highlight, checkIn: d.checkIn ? JSON.stringify(d.checkIn) : null },
-      update: { highlight: d.highlight },
-    })
-  }
-  for (const a of payload.activities) {
-    await db.activity.upsert({
-      where: { id: a.id },
-      create: { id: a.id, userId: a.userId, date: new Date(a.date), goalId: a.goalId, hours: a.hours, start: a.start, end: a.end, label: a.label },
-      update: {},
-    })
-  }
-  for (const h of payload.dayHabits) {
-    await db.dayHabit.upsert({
-      where: { userId_date_habitId: { userId: h.userId, date: new Date(h.date), habitId: h.habitId } },
-      create: { userId: h.userId, date: new Date(h.date), habitId: h.habitId, done: h.done },
-      update: { done: h.done },
-    })
-  }
-  for (const m of payload.dayMetrics) {
-    await db.dayMetric.upsert({
-      where: { userId_date_metricId: { userId: m.userId, date: new Date(m.date), metricId: m.metricId } },
-      create: { userId: m.userId, date: new Date(m.date), metricId: m.metricId, value: m.value },
-      update: { value: m.value },
-    })
-  }
-  for (const n of payload.notes) {
-    await db.note.upsert({
-      where: { id: n.id },
-      create: { id: n.id, userId: n.userId, date: new Date(n.date), text: n.text },
-      update: {},
-    })
-  }
-  for (const i of payload.inboxItems) {
-    await db.inboxItem.upsert({
-      where: { id: i.id },
-      create: { id: i.id, userId: i.userId, text: i.text, addedAt: new Date(i.addedAt), done: i.done },
-      update: {},
-    })
-  }
-  for (const s of payload.screenEntries ?? []) {
-    await db.screenEntry.upsert({
-      where: { userId_date_appName: { userId: s.userId, date: new Date(s.date), appName: s.appName } },
-      create: { userId: s.userId, date: new Date(s.date), appName: s.appName, category: s.category, minutes: s.minutes },
-      update: { minutes: s.minutes, category: s.category },
-    })
-  }
+
+    for (const g of payload.goals) {
+      await tx.goal.upsert({
+        where: { userId_id: { userId: g.userId, id: g.id } },
+        create: {
+          userId: g.userId, id: g.id, name: g.name, unit: g.unit, target: g.target,
+          deadline: g.deadline ? new Date(g.deadline) : null,
+          weeklyTargetHours: g.weeklyTargetHours, color: g.color, sortOrder: g.sortOrder,
+          milestones: JSON.stringify(g.milestones ?? []),
+        },
+        update: { name: g.name, unit: g.unit, target: g.target },
+      })
+    }
+    for (const t of payload.tasks) {
+      await tx.task.upsert({
+        where: { id: t.id },
+        create: {
+          id: t.id, userId: t.userId, goalId: t.goalId, label: t.label, status: t.status,
+          priority: t.priority, urgent: t.urgent, important: t.important,
+          lastTouched: new Date(t.lastTouched),
+        },
+        update: { label: t.label, status: t.status },
+      })
+    }
+    for (const h of payload.habits) {
+      await tx.habit.upsert({
+        where: { userId_id: { userId: h.userId, id: h.id } },
+        create: h,
+        update: { name: h.name, targetPerWeek: h.targetPerWeek },
+      })
+    }
+    for (const m of payload.metrics) {
+      await tx.metric.upsert({
+        where: { userId_id: { userId: m.userId, id: m.id } },
+        create: m,
+        update: { name: m.name },
+      })
+    }
+    for (const d of payload.importantDates) {
+      await tx.importantDate.upsert({
+        where: { id: d.id },
+        create: { id: d.id, userId: d.userId, label: d.label, date: new Date(d.date), type: d.type, repeatsAnnually: d.repeatsAnnually },
+        update: {},
+      })
+    }
+    for (const d of payload.days) {
+      await tx.day.upsert({
+        where: { userId_date: { userId: d.userId, date: new Date(d.date) } },
+        create: { userId: d.userId, date: new Date(d.date), highlight: d.highlight, checkIn: d.checkIn ? JSON.stringify(d.checkIn) : null },
+        update: { highlight: d.highlight },
+      })
+    }
+    for (const a of payload.activities) {
+      await tx.activity.upsert({
+        where: { id: a.id },
+        create: { id: a.id, userId: a.userId, date: new Date(a.date), goalId: a.goalId, hours: a.hours, start: a.start, end: a.end, label: a.label },
+        update: {},
+      })
+    }
+    for (const h of payload.dayHabits) {
+      await tx.dayHabit.upsert({
+        where: { userId_date_habitId: { userId: h.userId, date: new Date(h.date), habitId: h.habitId } },
+        create: { userId: h.userId, date: new Date(h.date), habitId: h.habitId, done: h.done },
+        update: { done: h.done },
+      })
+    }
+    for (const m of payload.dayMetrics) {
+      await tx.dayMetric.upsert({
+        where: { userId_date_metricId: { userId: m.userId, date: new Date(m.date), metricId: m.metricId } },
+        create: { userId: m.userId, date: new Date(m.date), metricId: m.metricId, value: m.value },
+        update: { value: m.value },
+      })
+    }
+    for (const n of payload.notes) {
+      await tx.note.upsert({
+        where: { id: n.id },
+        create: { id: n.id, userId: n.userId, date: new Date(n.date), text: n.text },
+        update: {},
+      })
+    }
+    for (const i of payload.inboxItems) {
+      await tx.inboxItem.upsert({
+        where: { id: i.id },
+        create: { id: i.id, userId: i.userId, text: i.text, addedAt: new Date(i.addedAt), done: i.done },
+        update: {},
+      })
+    }
+    for (const s of payload.screenEntries ?? []) {
+      await tx.screenEntry.upsert({
+        where: { userId_date_appName: { userId: s.userId, date: new Date(s.date), appName: s.appName } },
+        create: { userId: s.userId, date: new Date(s.date), appName: s.appName, category: s.category, minutes: s.minutes },
+        update: { minutes: s.minutes, category: s.category },
+      })
+    }
+  })
 }
 
-async function deleteUserAndAllDataExceptUser(userId: string): Promise<void> {
-  await db.screenEntry.deleteMany({ where: { userId } })
-  await db.dayHabit.deleteMany({ where: { userId } })
-  await db.dayMetric.deleteMany({ where: { userId } })
-  await db.activity.deleteMany({ where: { userId } })
-  await db.day.deleteMany({ where: { userId } })
-  await db.note.deleteMany({ where: { userId } })
-  await db.inboxItem.deleteMany({ where: { userId } })
-  await db.importantDate.deleteMany({ where: { userId } })
-  await db.task.deleteMany({ where: { userId } })
-  await db.goal.deleteMany({ where: { userId } })
-  await db.habit.deleteMany({ where: { userId } })
-  await db.metric.deleteMany({ where: { userId } })
-  await db.session.deleteMany({ where: { userId } })
+export async function deleteUserAndAllDataExceptUser(userId: string, c: Client = db): Promise<void> {
+  await c.screenEntry.deleteMany({ where: { userId } })
+  await c.dayHabit.deleteMany({ where: { userId } })
+  await c.dayMetric.deleteMany({ where: { userId } })
+  await c.activity.deleteMany({ where: { userId } })
+  await c.day.deleteMany({ where: { userId } })
+  await c.note.deleteMany({ where: { userId } })
+  await c.inboxItem.deleteMany({ where: { userId } })
+  await c.importantDate.deleteMany({ where: { userId } })
+  await c.task.deleteMany({ where: { userId } })
+  await c.goal.deleteMany({ where: { userId } })
+  await c.habit.deleteMany({ where: { userId } })
+  await c.metric.deleteMany({ where: { userId } })
+  await c.session.deleteMany({ where: { userId } })
   // Do NOT delete LlmSetting or UserBackup — those are audit/config
 }
 

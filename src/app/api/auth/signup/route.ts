@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server'
-import { createUser, findUserByName, countUsers, createSessionRow, assembleLedgerRaw, createGoal, createHabit } from '@/lib/neon-sql'
+import { createUser, findUserByName, countUsers, createSessionRow, assembleLedgerRaw, createGoal, createHabit, updateUser } from '@/lib/neon-sql'
 import { hashPassword, sessionCookieHeader, generateSessionToken, jsonError } from '@/lib/server/auth'
 import { limit, clientIp, POLICY } from '@/lib/server/rate-limit'
 import { generateId } from '@/lib/server/cuid'
@@ -28,7 +28,7 @@ async function seedStarterCatalog(userId: string) {
  *    stays the default when the variable is unset.
  */
 export async function POST(req: NextRequest) {
-  let body: { name?: string; password?: string; inviteCode?: string }
+  let body: { name?: string; password?: string; inviteCode?: string; tz?: string }
   try { body = await req.json() } catch { return jsonError(400, 'Invalid request body.') }
 
   const name = String(body.name ?? '').trim()
@@ -75,6 +75,15 @@ export async function POST(req: NextRequest) {
 
     // v11: give the fresh book a starter catalog (goals + habits)
     await seedStarterCatalog(user.id).catch((e) => console.warn('starter catalog failed:', e))
+
+    // P1-5: remember the device's timezone for dateless captures (best-effort)
+    const tz = typeof body.tz === 'string' ? body.tz.trim().slice(0, 64) : ''
+    if (tz) {
+      try {
+        new Intl.DateTimeFormat('en-CA', { timeZone: tz })
+        await updateUser({ id: user.id, tz })
+      } catch { /* unknown zone — ignore */ }
+    }
 
     // Return REAL ledger (v9 — assembleLedger now works)
     const ledger = await assembleLedgerRaw(user.id)

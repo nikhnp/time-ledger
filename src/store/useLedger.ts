@@ -16,6 +16,7 @@ import type {
   ScreenEntryT,
   EntryRecommendation,
 } from '@/lib/types'
+import { clientTz } from '@/lib/dates'
 
 export type ViewId =
   | 'today' | 'week' | 'month' | 'habits' | 'board' | 'budget'
@@ -220,6 +221,8 @@ export const useLedger = create<LedgerStore>((set, get) => ({
       })
       // v10: fetch dock config from DB
       void get().fetchDockConfig()
+      // P1-5: keep the server's copy of this device's timezone current
+      void api('/api/account/tz', { method: 'POST', body: JSON.stringify({ tz: clientTz() }) })
     }
     set({ booted: true })
   },
@@ -227,7 +230,7 @@ export const useLedger = create<LedgerStore>((set, get) => ({
   async login(name, password) {
     const r = await api<{ user: LedgerUser; ledger: Ledger }>('/api/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ name, password }),
+      body: JSON.stringify({ name, password, tz: clientTz() }),
     })
     if (!r.ok) return r.error
     set({ user: r.data.user, ledger: r.data.ledger, view: 'today', household: null })
@@ -240,7 +243,7 @@ export const useLedger = create<LedgerStore>((set, get) => ({
   async signup(name, password) {
     const r = await api<{ user: LedgerUser; ledger: Ledger }>('/api/auth/signup', {
       method: 'POST',
-      body: JSON.stringify({ name, password }),
+      body: JSON.stringify({ name, password, tz: clientTz() }),
     })
     if (!r.ok) return r.error
     set({ user: r.data.user, ledger: r.data.ledger, view: 'today', household: null })

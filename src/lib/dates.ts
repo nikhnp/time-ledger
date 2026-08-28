@@ -3,7 +3,14 @@
 export function isoLocal(d: Date): string {
   return d.toISOString().slice(0, 10)
 }
+/**
+ * "Today" as a YYYY-MM-DD string.
+ * - Browser (client): resolves in the device's own zone (P1-5) — consistent
+ *   with the server, which resolves per-user tz via todayIn(user.tz).
+ * - Server: UTC (callers that know the user's zone must use todayIn(tz)).
+ */
 export function todayStr(): string {
+  if (typeof window !== 'undefined') return todayIn(clientTz())
   return new Date().toISOString().slice(0, 10)
 }
 

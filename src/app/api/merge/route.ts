@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
 import { applyMergeDelta, assembleLedger } from '@/lib/server/ledger'
+import { todayIn } from '@/lib/dates'
 import type { MergeDelta, MergeResult } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
@@ -8,6 +9,7 @@ export const dynamic = 'force-dynamic'
 /**
  * POST /api/merge
  * v9: getSessionUser + applyMergeDelta + assembleLedger all use raw SQL.
+ * P1-5: dateless deltas land on the USER's local day (tz from their profile).
  */
 export async function POST(req: NextRequest) {
   const user = await getSessionUser(req)
@@ -21,7 +23,7 @@ export async function POST(req: NextRequest) {
   try {
     for (const d of deltas) {
       if (!d || typeof d !== 'object') return jsonError(400, 'delta must be an object')
-      results.push(await applyMergeDelta(user.id, d))
+      results.push(await applyMergeDelta(user.id, d, { today: todayIn(user.tz) }))
     }
     const ledger = await assembleLedger(user.id)
     return Response.json({ ledger, results })

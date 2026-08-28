@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
 import { assembleLedgerRaw } from '@/lib/neon-sql'
 import { LLM } from '@/lib/llm-server'
-import { todayStr, isoDaysAgo } from '@/lib/dates'
+import { todayIn, isoLocal, s2d } from '@/lib/dates'
 import type { Ledger, DayT } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
@@ -22,9 +22,10 @@ export async function GET(req: NextRequest) {
 
   try {
     const ledger = await assembleLedgerRaw(me.id)
-    const today = todayStr()
+    const today = todayIn(me.tz) // P1-5: the user's local day
     const day: DayT | undefined = ledger.days.find((d) => d.date === today)
-    const yesterday = isoDaysAgo(1)
+    // "yesterday" relative to the user's local today (not UTC's)
+    const yesterday = isoLocal(new Date(s2d(today).getTime() - 86400000))
     const yesterdayDay: DayT | undefined = ledger.days.find((d) => d.date === yesterday)
 
     // Build context about the day

@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
 import { findGoalByUserAndId, createTask, assembleLedgerRaw } from '@/lib/neon-sql'
-import { todayStr } from '@/lib/server/ledger'
+import { todayIn } from '@/lib/dates'
 import { generateId } from '@/lib/server/cuid'
 
 export const dynamic = 'force-dynamic'
@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     priority,
     urgent: priority === 'high',
     important: true,
-    lastTouched: new Date(todayStr() + 'T00:00:00Z'),
+    lastTouched: new Date(todayIn(user.tz) + 'T00:00:00Z'),
   })
   return Response.json({ ledger: await assembleLedgerRaw(user.id) })
 }

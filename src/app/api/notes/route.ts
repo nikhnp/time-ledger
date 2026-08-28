@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
 import { createNote, assembleLedgerRaw } from '@/lib/neon-sql'
-import { todayStr, validDateStr } from '@/lib/server/ledger'
+import { validDateStr } from '@/lib/server/ledger'
+import { todayIn } from '@/lib/dates'
 import { generateId } from '@/lib/server/cuid'
 
 export const dynamic = 'force-dynamic'
@@ -17,7 +18,8 @@ export async function POST(req: NextRequest) {
   try { body = await req.json() } catch { return jsonError(400, 'invalid JSON body') }
   const text = String(body.text ?? '').trim()
   if (!text) return jsonError(400, 'Write something first.')
-  const dateStr = validDateStr(body.date) ? body.date : todayStr()
+  // P1-5: dateless notes land on the user's local day
+  const dateStr = validDateStr(body.date) ? body.date : todayIn(user.tz)
   const noteId = generateId()
   await createNote({
     id: noteId,
