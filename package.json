@@ -1,13 +1,14 @@
 {
   "name": "ledger",
-  "version": "10.6.0-p3a",
+  "version": "10.6.0-p3b",
   "private": true,
   "engines": {
     "node": ">=20.9"
   },
   "scripts": {
     "dev": "next dev -p 3000",
-    "build": "npm run typecheck && node scripts/ci/migrate-safe.mjs && next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
+    "postinstall": "prisma generate",
+    "build": "prisma generate && npm run typecheck && node scripts/ci/migrate-safe.mjs && next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
     "start": "node .next/standalone/server.js",
     "lint": "eslint .",
     "test": "vitest run",
@@ -43,6 +44,8 @@
   "allowScripts": {
     "prisma@6.19.3": true,
     "esbuild@0.28.2": true,
-    "unrs-resolver@1.12.2": true
+    "unrs-resolver@1.12.2": true,
+    "@prisma/client@6.19.3": true,
+    "@prisma/engines@6.19.3": true
   }
 }

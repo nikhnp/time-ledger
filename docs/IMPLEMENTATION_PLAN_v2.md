@@ -1,7 +1,7 @@
 # Ledger Implementation Plan v2 — living document
 
-**Version:** v2.4 · 2026-08-29 · supersedes v2.3
-**Code state:** `v10.6.0-p3a` (branch `main`) — Phases 1–3 COMPLETE (the whole plan shipped)
+**Version:** v2.5 · 2026-08-29 · supersedes v2.4
+**Code state:** `v10.6.0-p3b` (branch `main`) — Phases 1–3 COMPLETE (the whole plan shipped)
 
 ## 0. What changed since v1
 
@@ -15,6 +15,7 @@
 | 6 | **P2-1 delta API shipped** in v10.5.0-p2c — see §3c. Mutations now respond `{ cursor, patch, deleted }` (per-entity patches + a ChangeLog cursor) instead of re-shipping the full ledger; `GET /api/ledger?since=` replays deltas for other devices. Prerequisite for P2-10. |
 | 9 | **Phase 3 complete** (v10.6.0-p3a): P3-1 weekly review, P3-2 structured LLM + cost control, P3-3 PWA offline capture, P3-4 ops hardening — see §3e. |
 | 8 | **Phase 2 complete** (v10.5.0-p2d): P2-2 pursuits, P2-3 edit/delete, P2-4 close-the-day, P2-5 indexes, P2-9 future dates, P2-10 local-first — see §3d. |
+| 10 | **p3b fix release** (v10.6.0-p3b) — p3a never built anywhere: ① migration `9_p3_review_default` closed its SQL string with `"` instead of `'` (CI: P3018, unterminated quoted string); ② Netlify typechecked against a stale generated Prisma client — `prisma generate` now runs in `postinstall` + as the first build step; ③ merge note replays were never stored with their `clientId`, so offline capture could double-write notes (P2-10); ④ a delete that empties a day (e.g. habit delete) no longer drops that day from the patch — the empty re-fold is the client's clear instruction (P2-1); ⑤ delta-sync tests now send unique client IPs (signup is 3/hour per IP) and the lean-preset test expects `review`. Full chain 0→10 verified on a fresh Postgres; 56/56 tests green. |
 | 7 | **Delivery conventions (binding):** ① every file/code REMOVAL ships as a bash script the user runs; ② Neon/DB ops ship as manual console instructions; ③ dev substrate = node + bash only; ④ schema changes ship as hand-reviewed SQL migrations applied by `migrate-safe` at Netlify build. |
 
 ## 1. Backlog — work packages
@@ -37,7 +38,7 @@ P1-1 security hardening · P1-2 Vitest + CI · P1-3 migration history · P1-4 tr
 | **P2-9** | **Future-dated capture ("deadline after exactly a week")** | **DONE (p2d)** | `dates[]` in merge + LLM prompt; rule-based parser (`src/lib/date-words.ts`, 12 pure tests) works offline-LLM; StructuredPreview date rows with resolved day; Week/Month render dated items; important-date fix-in-place; §4 spec shipped |
 | **P2-10** | **Local-first cache & sync (snappy)** | **DONE (p2d)** | hand-rolled IndexedDB mirror (paint-before-network boot) + durable outbox (online event, focus, 60s interval) + `clientId` idempotency on Activity/Note (migration `8_p2_local_first`); impersonation bypasses the cache; offline chip in the topbar; §6 spec shipped |
 
-### Phase 3 — Experience & ops ✅ DONE (v10.6.0-p3a)
+### Phase 3 — Experience & ops ✅ DONE (v10.6.0-p3b)
 P3-1 weekly review view (`/api/review/week` — ONE aggregate request; dock tool `review`, new-user default via `9_p3_review_default`) · P3-2 structured LLM + token budget (`generateJson` + zod 4 native JSON Schema, `LlmCall` table via `10_p3_llm_calls`, `LLM_DAILY_TOKEN_BUDGET` default 50k, circuit breaker, 8s timeouts, usage panel) · P3-3 PWA offline (hand-rolled `sw.js` + manifest + offline fallback; capture rides the P2-10 outbox + clientIds) · P3-4 ops hardening (`/api/admin/purge` + `CRON_SECRET`, CSP enforced, `docs/backup.yml.example`, `docs/RUNBOOK.md`).
 
 ## 2. Recommended execution order

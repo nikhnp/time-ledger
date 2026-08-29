@@ -39,7 +39,17 @@ type Json = Record<string, unknown> & { cursor?: number; ledger?: unknown; patch
 const req = (
   url: string,
   init: { method?: string; headers?: Record<string, string>; body?: string } = {},
-) => new NextRequest(`http://localhost${url}`, init)
+) =>
+  new NextRequest(`http://localhost${url}`, {
+    ...init,
+    headers: {
+      // Each request comes from its own client IP: this suite signs up >3
+      // users, and signup is rate limited to 3/hour per IP (P1-1d). Without
+      // this, the 4th newUser() in the file gets a 429.
+      'x-forwarded-for': `10.${(Math.random() * 250 + 1) | 0}.${(Math.random() * 250 + 1) | 0}.${(Math.random() * 250 + 1) | 0}`,
+      ...(init.headers ?? {}),
+    },
+  })
 const jsonReq = (url: string, body: unknown, cookie?: string, method = 'POST') =>
   req(url, {
     method,

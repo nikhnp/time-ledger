@@ -179,7 +179,7 @@ export async function applyMergeDelta(
     if (newNotes.length) {
       for (const n of newNotes) {
         if (n.clientId && (await findNoteByUserAndClientId(userId, n.clientId))) continue
-        await createNote({ id: generateId(), userId, date: dayDate, text: n.text }, tx)
+        await createNote({ id: generateId(), userId, date: dayDate, text: n.text, clientId: n.clientId }, tx)
       }
       counts.notes = newNotes.length
     }

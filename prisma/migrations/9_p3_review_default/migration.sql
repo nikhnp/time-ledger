@@ -2,4 +2,4 @@
 -- Metadata-only SET DEFAULT (instant, no rewrite — same pattern as
 -- 3_p2_presets). Existing users' saved dockConfig is never touched; they
 -- enable Review with one tap in Settings → Tools.
-ALTER TABLE "User" ALTER COLUMN "dockConfig" SET DEFAULT '{"enabled":["habits","board","goals","inbox","notes","review"],"keepInDock":["habits"]}";
+ALTER TABLE "User" ALTER COLUMN "dockConfig" SET DEFAULT '{"enabled":["habits","board","goals","inbox","notes","review"],"keepInDock":["habits"]}';

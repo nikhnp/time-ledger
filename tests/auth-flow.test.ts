@@ -230,7 +230,8 @@ d('tools (P2-6)', () => {
     const row = await db.user.findUnique({ where: { name } })
     expect(row).not.toBeNull()
     const cfg = JSON.parse(row!.dockConfig) as { enabled: string[]; keepInDock: string[] }
-    expect(cfg.enabled).toEqual(['habits', 'board', 'goals', 'inbox', 'notes'])
+    // P3-1: review joined the lean default (migration 9_p3_review_default).
+    expect(cfg.enabled).toEqual(['habits', 'board', 'goals', 'inbox', 'notes', 'review'])
     expect(cfg.keepInDock).toEqual(['habits'])
   })
 

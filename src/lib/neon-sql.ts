@@ -1125,8 +1125,12 @@ export async function assembleDayRows(userId: string, dates: string[]): Promise<
     const acts = activities.filter((a) => d2s(a.date) === key)
     const hbs = dayHabits.filter((h) => d2s(h.date) === key)
     const mts = dayMetrics.filter((m) => d2s(m.date) === key)
-    /* a date with no rows at all never appears in a full assembly — skip it */
-    if (!day && acts.length === 0 && hbs.length === 0 && mts.length === 0) continue
+    /* P2-1 delete contract: a touched date is ALWAYS emitted, even when the
+     * change emptied it (e.g. a habit delete wiped the day's last check) —
+     * the empty row is the client's instruction to clear that day. Skipping
+     * it would leave stale habit checks/metrics on every other device.
+     * (The full ledger assembly builds its own days and only ever visits
+     * dates that still have rows, so it is unaffected by this.) */
     const habits: Record<string, boolean> = {}
     for (const h of hbs) habits[h.habitId] = h.done
     const metrics: Record<string, number> = {}
