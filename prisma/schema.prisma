@@ -34,7 +34,12 @@ model User {
   isActive              Boolean   @default(true) // false = deactivated by admin
   passwordResetToken    String? // hex token; null when not in reset flow
   passwordResetExpires  DateTime? // when the reset token expires
-  dockConfig            String    @default("{\"enabled\":[\"habits\",\"screen\",\"board\",\"budget\",\"goals\",\"inbox\",\"matrix\",\"notes\",\"people\"],\"keepInDock\":[\"habits\"]}") // per-user dock customization (JSON)
+  // P2-6: lean default tool set for NEW users (matrix/budget/screen/people
+  // start OFF — lenses & niche, see TOOLS_AUDIT.md §3). Role-aware half
+  // (+people for admins) is applied by the signup route. Existing users'
+  // saved dockConfig is never touched; migration 3_p2_presets mirrors this
+  // default in SQL.
+  dockConfig            String    @default("{\"enabled\":[\"habits\",\"board\",\"goals\",\"inbox\",\"notes\"],\"keepInDock\":[\"habits\"]}") // per-user dock customization (JSON)
   llmSettings           LlmSetting[]
   adminActions          AdminAction[]  @relation("AdminActor")
   adminActionsTarget    AdminAction[]  @relation("AdminTarget")

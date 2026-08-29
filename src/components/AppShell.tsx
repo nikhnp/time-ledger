@@ -21,7 +21,7 @@ import FocusModal from '@/components/FocusModal'
 import SettingsModal from '@/components/SettingsModal'
 import AdminPanel from '@/components/AdminPanel'
 import Toast from '@/components/Toast'
-import { TOOL_LIST } from '@/components/AppShellTools'
+import { TOOL_LIST, ADMIN_ONLY_TOOLS } from '@/components/AppShellTools'
 
 /* ---------- dock ---------- */
 
@@ -54,9 +54,13 @@ function Dock() {
   const user = useLedger((s) => s.user)
 
   /* tools the user has enabled (More sheet + dock membership obey this).
-   * Until the DB config loads, treat every tool as enabled. */
+   * Until the DB config loads, treat every tool as enabled. P2-6: admin-only
+   * tools (People) are hard-gated by role too, so a legacy dockConfig that
+   * still lists them can't surface them for a non-admin. */
   const enabled = dockConfig?.enabled
-  const isEnabled = (id: ViewId) => !enabled || enabled.includes(id)
+  const isEnabled = (id: ViewId) =>
+    (!enabled || enabled.includes(id)) &&
+    (user?.role === 'admin' || !ADMIN_ONLY_TOOLS.includes(id))
 
   const dockTools = dockOptional.filter((id) => isEnabled(id))
   const navItems: ViewId[] = ['today', 'week', 'month', ...dockTools]
@@ -249,10 +253,15 @@ export default function AppShell() {
     return () => ro.disconnect()
   }, [])
 
-  /* if the current view's tool got disabled, fall back to Today */
+  /* if the current view's tool got disabled (or is admin-only for this
+   * role), fall back to Today */
   useEffect(() => {
     if (!dockConfig?.enabled) return
-    if (TOOL_LIST.includes(view) && !dockConfig.enabled.includes(view)) {
+    const role = useLedger.getState().user?.role
+    const hidden =
+      !dockConfig.enabled.includes(view) ||
+      (role !== 'admin' && ADMIN_ONLY_TOOLS.includes(view))
+    if (TOOL_LIST.includes(view) && hidden) {
       useLedger.getState().setView('today')
     }
   }, [dockConfig, view])

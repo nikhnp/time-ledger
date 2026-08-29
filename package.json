@@ -1,6 +1,6 @@
 {
   "name": "ledger",
-  "version": "10.5.0-p2a",
+  "version": "10.5.0-p2b",
   "private": true,
   "engines": {
     "node": ">=20.9"

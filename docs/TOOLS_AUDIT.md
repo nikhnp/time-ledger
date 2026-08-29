@@ -110,10 +110,13 @@ Not toggleable; they're the roll-up surfaces. **Owed:** Week/Month should render
 
 **Mechanism:** Ledger already has a DB-backed per-user tool toggle (`User.dockConfig`,
 Settings → Tools, `useToolEnabled` gating). P2-6 extends it with:
-1. **Presets** — `default` (the lean set above), `everything` (all tools), applied at signup only.
-2. **Default dockConfig for new users:** enabled = `today, habits, board, goals, inbox, notes` (+ `people` if admin); matrix/budget/screen start disabled.
-3. Settings → Tools copy that explains each toggle in one line.
-4. **Zero data loss when disabled:** hidden ≠ deleted; re-enabling restores full state.
+1. **Presets** — `Lean` (the lean set above), `Everything` (all tools), as buttons in Settings → Tools; the lean set is applied automatically at signup.
+2. **Default dockConfig for new users:** enabled = `habits, board, goals, inbox, notes` (+ `people` if admin); matrix/budget/screen start disabled — DB column default via migration `3_p2_presets`, role-aware half via the signup route.
+3. Settings → Tools copy that explains each toggle in one line (and marks the lenses).
+4. **People is admin-gated end-to-end:** hidden from non-admin Settings, hard-gated in the dock/More sheet, and stripped server-side in `PUT /api/settings/dock`.
+5. **Zero data loss when disabled:** hidden ≠ deleted; re-enabling restores full state.
+
+**Shipped in v10.5.0-p2b** — all five points above are live; see IMPLEMENTATION_PLAN_v2.md §3b.
 
 ---
 

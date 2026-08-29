@@ -3,6 +3,7 @@ import { createUser, findUserByName, countUsers, createSessionRow, assembleLedge
 import { hashPassword, sessionCookieHeader, generateSessionToken, jsonError } from '@/lib/server/auth'
 import { limit, clientIp, POLICY } from '@/lib/server/rate-limit'
 import { generateId } from '@/lib/server/cuid'
+import { presetFor } from '@/components/AppShellTools'
 
 export const dynamic = 'force-dynamic'
 
@@ -67,6 +68,12 @@ export async function POST(req: NextRequest) {
       role,
       passwordHash,
     })
+
+    // P2-6: new books start with the lean tool preset — habits, board,
+    // goals, inbox, notes (+ People for admins). The DB column default is
+    // role-agnostic; this is the role-aware half. Existing users' configs
+    // are never touched by P2-6 — this only runs at signup.
+    await updateUser({ id: user.id, dockConfig: { enabled: presetFor(role), keepInDock: ['habits'] } })
 
     // Create session (token is hashed before storage since P1-1c)
     const token = generateSessionToken()

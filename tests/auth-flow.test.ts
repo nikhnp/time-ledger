@@ -100,15 +100,30 @@ d('login (P1-1a/d)', () => {
     expect(await good.json()).toEqual(await unknown.json())
   })
 
-  it('a null passwordHash user can NEVER log in (P1-1a)', async () => {
+  it('a null/empty passwordHash can NEVER log in (P1-1a)', async () => {
     const name = uname('nullhash')
     const u = await seedUser(name, 'temp-password-1')
-    await db.user.update({ where: { id: u.id }, data: { passwordHash: null as unknown as string } })
-    for (const pw of ['temp-password-1', '', 'anything']) {
+
+    // Layer 1 — DB guarantee: the column is NOT NULL since 1_p1_hardening
+    // (the null-hash "any password opens the book" bypass was THE root
+    // vuln). The vulnerable state cannot exist — even raw SQL must refuse
+    // to build it. Prisma can no longer express the update at all
+    // (PrismaClientValidationError), so go around it with raw SQL.
+    await expect(
+      db.$executeRaw`UPDATE "User" SET "passwordHash" = NULL WHERE "id" = ${u.id}`,
+    ).rejects.toThrow()
+
+    // Layer 2 — application backstop: an EMPTY hash satisfies NOT NULL but
+    // is falsy in JS, so it still exercises the route's !passwordHash guard
+    // (kept for legacy DBs pre-migration). Must 403, never 200.
+    await db.$executeRaw`UPDATE "User" SET "passwordHash" = '' WHERE "id" = ${u.id}`
+    for (const pw of ['temp-password-1', 'anything']) {
       const res = await POST_login(jsonReq('/api/auth/login', { name, password: pw }))
-      expect([401, 403]).toContain(res.status)
-      expect(res.status).not.toBe(200)
+      expect(res.status).toBe(403)
     }
+    // an empty submitted password is rejected at validation, before the
+    // hash check (same "never 200" property)
+    expect((await POST_login(jsonReq('/api/auth/login', { name, password: '' }))).status).toBe(400)
   })
 
   it('rate limits login to 5 attempts / 15 min per ip+username', async () => {
@@ -204,5 +219,58 @@ d('password change (P1-1d)', () => {
     // old password no longer works, new one does
     expect((await POST_login(jsonReq('/api/auth/login', { name, password: 'old-password-1' }))).status).toBe(401)
     expect((await POST_login(jsonReq('/api/auth/login', { name, password: 'new-password-9' }))).status).toBe(200)
+  })
+})
+
+d('tools (P2-6)', () => {
+  it('signup applies the lean preset — lenses (matrix/budget) and screen/people start OFF', async () => {
+    const name = uname('preset')
+    const res = await POST_signup(jsonReq('/api/auth/signup', { name, password: 'long-enough-pw' }))
+    expect(res.status).toBe(200)
+    const row = await db.user.findUnique({ where: { name } })
+    expect(row).not.toBeNull()
+    const cfg = JSON.parse(row!.dockConfig) as { enabled: string[]; keepInDock: string[] }
+    expect(cfg.enabled).toEqual(['habits', 'board', 'goals', 'inbox', 'notes'])
+    expect(cfg.keepInDock).toEqual(['habits'])
+  })
+
+  it('a non-admin CANNOT enable People via the dock API (server-side gate)', async () => {
+    const name = uname('gated')
+    await seedUser(name, 'gated-pass-1')
+    const login = await POST_login(jsonReq('/api/auth/login', { name, password: 'gated-pass-1' }))
+    expect(login.status).toBe(200)
+    const cookie = `__Host-ledger_session=${encodeURIComponent(tokenFrom(login.headers.get('set-cookie')))}`
+    const { PUT: PUT_dock } = await import('@/app/api/settings/dock/route')
+    const res = await PUT_dock(
+      req('/api/settings/dock', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({ enabled: ['habits', 'board', 'people'], keepInDock: ['habits'] }),
+      }),
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.config.enabled).toContain('habits')
+    expect(body.config.enabled).not.toContain('people')
+  })
+
+  it('an admin CAN enable People via the dock API', async () => {
+    const name = uname('admintools')
+    const u = await seedUser(name, 'admin-pass-123')
+    await db.user.update({ where: { id: u.id }, data: { role: 'admin' } })
+    const login = await POST_login(jsonReq('/api/auth/login', { name, password: 'admin-pass-123' }))
+    expect(login.status).toBe(200)
+    const cookie = `__Host-ledger_session=${encodeURIComponent(tokenFrom(login.headers.get('set-cookie')))}`
+    const { PUT: PUT_dock } = await import('@/app/api/settings/dock/route')
+    const res = await PUT_dock(
+      req('/api/settings/dock', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({ enabled: ['habits', 'people'], keepInDock: ['habits'] }),
+      }),
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.config.enabled).toContain('people')
   })
 })

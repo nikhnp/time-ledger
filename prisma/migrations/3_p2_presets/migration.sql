@@ -1,0 +1,23 @@
+-- P2-6: lean default tool set for NEW users (tool rationalization —
+-- see TOOLS_AUDIT.md §3 and IMPLEMENTATION_PLAN_v2.md §5).
+--
+-- Applied by scripts/ci/migrate-safe.mjs during the Netlify build.
+-- Metadata-only (ALTER COLUMN ... SET DEFAULT — no table rewrite, instant
+-- on any Postgres).
+--
+-- What changes: the DEFAULT dockConfig for rows created from now on.
+--   old: enabled = habits, screen, board, budget, goals, inbox, matrix,
+--        notes, people  (everything on)
+--   new: enabled = habits, board, goals, inbox, notes (the core pipeline)
+--
+-- What does NOT change:
+--   * Existing users keep their saved dockConfig untouched — matrix,
+--     budget and screen stay visible for whoever already has them until
+--     they turn them off in Settings → Tools.
+--   * Nothing is deleted: disabling a tool only hides it; re-enabling
+--     restores the full state.
+--
+-- People is role-aware, so the DB default stays role-agnostic — the
+-- signup route grants People to admins on top of this default
+-- (src/app/api/auth/signup/route.ts → presetFor()).
+ALTER TABLE "User" ALTER COLUMN "dockConfig" SET DEFAULT '{"enabled":["habits","board","goals","inbox","notes"],"keepInDock":["habits"]}';

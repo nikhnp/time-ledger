@@ -7,7 +7,7 @@ import { I } from '@/components/Icon'
 import { RoughBtn } from '@/components/rough/controls'
 import { Stamp } from '@/components/bits'
 import { LLM, LLM_PROVIDERS, type LLMConfig } from '@/lib/llm'
-import { TOOL_LIST } from '@/components/AppShellTools'
+import { presetFor, visibleTools, TOOL_HINTS } from '@/components/AppShellTools'
 
 const THEMES: Array<{ id: 'light' | 'dark' | 'sage' | 'clay' | 'slate'; label: string; dot: string }> = [
   { id: 'light', label: 'Linen', dot: '#F1E9DB' },
@@ -69,7 +69,7 @@ export default function SettingsModal() {
     if (dockOptional.includes(id)) {
       setDockOptional(dockOptional.filter((x) => x !== id))
     } else {
-      if (dockOptional.length >= 2) { showToast('Dock is full — six items max. Remove one first.'); return }
+      if (dockOptional.length >= 2) { showToast('Dock is full — two items max. Remove one first.'); return }
       setDockOptional([...dockOptional, id])
     }
   }
@@ -186,7 +186,7 @@ export default function SettingsModal() {
             />
             <RoughBtn className="btn-sm" onClick={savePassword}>Set password</RoughBtn>
           </div>
-          <p className="field-hint">Empty password = any password opens the ledger. Stored scrypt-hashed on the server.</p>
+          <p className="field-hint">At least 8 characters. Stored scrypt-hashed on the server — never in plain text.</p>
 
           {/* v11: self-serve account removal */}
           <div className="danger-zone">
@@ -383,6 +383,9 @@ function V10DockSection() {
   const dockConfig = useLedger((s) => s.dockConfig)
   const saveDockConfig = useLedger((s) => s.saveDockConfig)
   const showToast = useLedger((s) => s.showToast)
+  const user = useLedger((s) => s.user)
+  /* P2-6: People is admin-gated — hidden from non-admins entirely */
+  const tools = visibleTools(user?.role)
 
   /* v11 fix: don't render toggles until the DB-backed config has loaded —
    * otherwise the section starts from a hardcoded ['habits'] state and a
@@ -402,7 +405,7 @@ function V10DockSection() {
   if (!loaded || !enabled || !keepInDock) {
     return (
       <div className="settings-section">
-        <p className="settings-h">Dock customization</p>
+        <p className="settings-h">Tools</p>
         <p className="field-hint" style={{ marginBottom: 12, marginTop: 0 }}>Loading your tool setup…</p>
       </div>
     )
@@ -411,6 +414,19 @@ function V10DockSection() {
   /* capture the narrowed, non-null lists — closures below keep the type */
   const enabledNow = enabled
   const keepInDockNow = keepInDock
+
+  function applyPreset(kind: 'lean' | 'everything') {
+    /* lean = the core pipeline; everything = every tool this role can see.
+     * Data is never touched — this only changes what's visible. */
+    const next: string[] = kind === 'lean' ? presetFor(user?.role) : tools
+    const nextKeep = keepInDockNow.filter((t) => next.includes(t))
+    setEnabled(next)
+    setKeepInDock(nextKeep)
+    void saveDockConfig({ enabled: next, keepInDock: nextKeep })
+    showToast(kind === 'lean'
+      ? 'Lean preset applied — lenses off, data untouched.'
+      : 'Everything preset applied — all tools on.')
+  }
 
   function toggleEnabled(tool: string) {
     const next = enabledNow.includes(tool)
@@ -440,25 +456,34 @@ function V10DockSection() {
 
   return (
     <div className="settings-section">
-      <p className="settings-h">Dock customization</p>
+      <p className="settings-h">Tools</p>
       <p className="field-hint" style={{ marginBottom: 12, marginTop: 0 }}>
-        Enable the tools you want access to. Of those, check &quot;Keep in dock&quot; to pin up to 2
-        as buttons in the bottom dock — others are accessible via the More menu.
-        Today, Week, Month, and More are always in the dock.
+        Turn tools on or off — turning one off hides it and never deletes its data.
+        Of the enabled tools, pin up to 2 to the dock with &quot;Keep in dock&quot;;
+        the rest stay reachable via the More menu. Today, Week, Month and More are
+        always docked.
       </p>
-      {Object.entries(TOOL_LABELS_FULL).map(([id, label]) => {
+      <div className="dock-presets">
+        <span className="dock-presets-label">Presets</span>
+        <RoughBtn className="btn-sm" onClick={() => applyPreset('lean')} type="button">Lean</RoughBtn>
+        <RoughBtn className="btn-sm" onClick={() => applyPreset('everything')} type="button">Everything</RoughBtn>
+      </div>
+      {tools.map((id) => {
         const isEnabled = enabledNow.includes(id)
         const isKept = keepInDockNow.includes(id)
         return (
           <div className="dock-config-row" key={id}>
-            <span className="dock-config-label">{label}</span>
+            <div className="dock-config-text">
+              <span className="dock-config-label">{TOOL_LABELS_FULL[id]}</span>
+              <span className="dock-tool-hint">{TOOL_HINTS[id]}</span>
+            </div>
             <div className="dock-config-controls">
               {/* Toggle slider for Enable/Disable */}
               <button
                 type="button"
                 role="switch"
                 aria-checked={isEnabled}
-                aria-label={`Enable ${label}`}
+                aria-label={`Enable ${TOOL_LABELS_FULL[id]}`}
                 className={`dock-toggle ${isEnabled ? 'on' : 'off'}`}
                 onClick={() => toggleEnabled(id)}
               >

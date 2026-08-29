@@ -1,7 +1,7 @@
 # Ledger Implementation Plan v2 — living document
 
-**Version:** v2 · 2026-08-28 · supersedes v1 (Phase-1 plan, 716 lines)
-**Code state:** `v10.5.0-p2a` (branch `main`, commit `adf885e`)
+**Version:** v2.1 · 2026-08-29 · supersedes v1 (Phase-1 plan, 716 lines)
+**Code state:** `v10.5.0-p2b` (branch `main`)
 
 ## 0. What changed since v1
 
@@ -10,8 +10,9 @@
 | 1 | **Phase 1 complete** (P1-1…P1-6, v10.4.0-p1): auth hotfixes, AES-256-GCM keys, rate limits, headers, Vitest+CI, migration history (db push retired), transactional writes, timezone correctness, dependency diet. Runbook: `docs/PHASE1-RUNBOOK.md`. |
 | 2 | **Regression incident:** user-side merge re-introduced stray files (commit `a64ec3b`): `bun.lock` (multiple-lockfiles error), unauthenticated `db-test`/`env-check` routes, 48 unused shadcn components. Fix = `scripts/03-remove-regression-files.sh` (removals are bash scripts per delivery convention). |
 | 3 | **New scope adopted from user feedback** (2026-08-28): future-dated deadlines, tool rationalization with default-off, local-first snappiness, tool completion (habits delete/archive, board add/columns, budget add, goals hours, inbox routing, matrix add), speech fixes, lockfile hygiene. |
-| 4 | **P2-7a + P2-8 shipped** in v10.5.0-p2a (commit `adf885e`) — see §3. |
-| 5 | **Delivery conventions (binding):** ① every file/code REMOVAL ships as a bash script the user runs; ② Neon/DB ops ship as manual console instructions; ③ dev substrate = node + bash only; ④ schema changes ship as hand-reviewed SQL migrations applied by `migrate-safe` at Netlify build. |
+| 4 | **P2-7a + P2-8 shipped** in v10.5.0-p2a — see §3. |
+| 5 | **CI green + P2-6 shipped** in v10.5.0-p2b — see §3b. CI fix: the P1-1a null-hash regression test predated the NOT NULL column and tried `passwordHash: null` through Prisma (PrismaClientValidationError); it now pins BOTH defense layers (raw-SQL NULL rejected by the DB + the route's falsy-hash 403 backstop via an empty-string hash). |
+| 6 | **Delivery conventions (binding):** ① every file/code REMOVAL ships as a bash script the user runs; ② Neon/DB ops ship as manual console instructions; ③ dev substrate = node + bash only; ④ schema changes ship as hand-reviewed SQL migrations applied by `migrate-safe` at Netlify build. |
 
 ## 1. Backlog — work packages
 
@@ -27,7 +28,7 @@ P1-1 security hardening · P1-2 Vitest + CI · P1-3 migration history · P1-4 tr
 | P2-3 | Edit/delete parity for entries & notes | planned | note editing, task label edit, activity correction |
 | P2-4 | Close-today loop — wire up `suggestions` (currently orphaned) | planned | nightly review; plan tomorrow from inbox |
 | P2-5 | Indexes & SQL aggregation | planned | after P2-1 shapes settle |
-| **P2-6** | **Tool rationalization + presets** (per TOOLS_AUDIT.md) | **planned** | default dockConfig for new users = today, habits, board, goals, inbox, notes (+people if admin); matrix/budget/screen default OFF as lenses; presets `default`/`everything`; Settings copy; zero data loss on disable |
+| **P2-6** | **Tool rationalization + presets** (per TOOLS_AUDIT.md) | **DONE (p2b)** | lean new-user default (today, habits, board, goals, inbox, notes; +people for admins); matrix/budget/screen default OFF as lenses; presets `Lean`/`Everything`; Settings copy; zero data loss on disable |
 | **P2-7** | **Tool completion & manual editing** | **P2-7a DONE** | remaining: streak CSS on Week/Month if reused, task label edit (→P2-3) |
 | **P2-8** | **Speech capture rework** | **DONE** | Android re-delivered-final dedupe (session-guarded suffix/prefix merge), transient-error auto-restart w/ backoff (network/aborted/audio-capture), permanent errors surfaced readably, session ids kill stale-restart races |
 | **P2-9** | **Future-dated capture ("deadline after exactly a week")** | **planned — spec below** | the user's headline request |
@@ -63,6 +64,19 @@ mostly client-side until the delta API lands.
 - [x] `npm run typecheck` clean · 17/17 pure tests pass · `next build` green incl. new `/api/habits/[id]`
 
 **Deploy notes for this drop:** `migrate-safe` auto-applies `2_p2_tool_completeness` (two idempotent ALTERs — nullable `Task.goalId`, `Habit.archived`). No Neon console steps. No forced logouts. Users' existing dockConfig untouched (matrix/budget stay visible for existing users until P2-6 presets land).
+
+## 3b. Shipped in v10.5.0-p2b (CI green + P2-6) — acceptance check
+
+- [x] CI: P1-1a null-hash test rewritten for the NOT NULL world — layer 1: `UPDATE "User" SET "passwordHash" = NULL` via `$executeRaw` must be REJECTED (pins the DB constraint); layer 2: an EMPTY hash (passes NOT NULL, falsy in JS) must hit the login route's 403 backstop — never 200
+- [x] P2-6: new users (signup) get the lean preset — `enabled = habits, board, goals, inbox, notes` (+ `people` for the first/admin account); migration `3_p2_presets` mirrors the DB column default (metadata-only `SET DEFAULT`)
+- [x] P2-6: Settings → Tools gains `Lean` / `Everything` preset buttons + one-line copy per toggle; section renamed from "Dock customization"
+- [x] P2-6: People is admin-gated end-to-end — Settings row hidden for non-admins, dock/More-sheet hard-gated by role (covers legacy configs), and `PUT /api/settings/dock` strips `people` server-side for non-admins
+- [x] P2-6: zero data loss — disabling a tool only hides it; existing users' saved dockConfig is never rewritten (old default keeps matrix/budget/screen visible for them)
+- [x] Stale copy fixed: account section no longer claims "empty password = any password opens the ledger" (pre-P1 text); dock-full toast says two, not six
+- [x] Tests: 3 new DB-backed pins (signup preset, member can't enable People, admin can) — run in CI alongside the full auth-flow suite
+- [x] `npm run typecheck` clean · `npm run lint` clean · 17/17 pure tests · `next build` green
+
+**Deploy notes for this drop:** `migrate-safe` auto-applies `3_p2_presets` (one metadata-only `ALTER COLUMN ... SET DEFAULT` — instant, no rewrite). No Neon console steps. No forced logouts. No user-visible change for existing accounts until they open Settings → Tools.
 
 ## 4. P2-9 spec — future-dated capture (headline request)
 
