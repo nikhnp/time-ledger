@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
-import { findGoalByUserAndId, findGoalsByUser, createGoal as createGoalRow, assembleLedgerRaw } from '@/lib/neon-sql'
+import { findGoalByUserAndId, findGoalsByUser, createGoal as createGoalRow, maxChangeId, respondMutation } from '@/lib/neon-sql'
 import { generateId } from '@/lib/server/cuid'
 
 export const dynamic = 'force-dynamic'
@@ -11,12 +11,12 @@ function slugify(name: string): string {
   return base || generateId().slice(0, 10)
 }
 
-/** POST /api/goals — create a goal for the current user. */
+/** POST /api/goals — create a goal (or a hobby — P2-2) for the current user. */
 export async function POST(req: NextRequest) {
   const me = await getSessionUser(req)
   if (!me) return jsonError(401, 'not logged in')
 
-  let body: { name?: string; target?: number; unit?: string; weeklyTargetHours?: number }
+  let body: { name?: string; target?: number; unit?: string; weeklyTargetHours?: number; kind?: string }
   try { body = await req.json() } catch { return jsonError(400, 'invalid JSON body') }
 
   const name = String(body.name ?? '').trim().slice(0, 60)
@@ -25,6 +25,15 @@ export async function POST(req: NextRequest) {
   const target = Math.max(1, Math.min(10000, Number(body.target) || 30))
   const unit = String(body.unit ?? 'hours').slice(0, 16)
   const weeklyTargetHours = Math.max(0.5, Math.min(80, Number(body.weeklyTargetHours) || 8))
+  // P2-2: hobbies ride the Goal model — everything goals have, minus the
+  // deadline pressure. Soft cap of 8 keeps the Today strip honest.
+  const kind = body.kind === 'hobby' ? 'hobby' : 'goal'
+  if (kind === 'hobby') {
+    const existing = await findGoalsByUser(me.id)
+    if (existing.filter((g) => g.kind === 'hobby').length >= 8) {
+      return jsonError(400, 'Eight hobbies is plenty — archive or swap one first.')
+    }
+  }
 
   /* unique slug per user */
   let id = slugify(name)
@@ -36,6 +45,7 @@ export async function POST(req: NextRequest) {
   }
 
   const existing = await findGoalsByUser(me.id)
+  const sinceId = await maxChangeId()
   await createGoalRow({
     userId: me.id,
     id,
@@ -44,8 +54,8 @@ export async function POST(req: NextRequest) {
     target,
     weeklyTargetHours,
     sortOrder: existing.length,
+    kind,
   })
 
-  const ledger = await assembleLedgerRaw(me.id)
-  return Response.json({ ledger })
+  return respondMutation(me.id, sinceId)
 }

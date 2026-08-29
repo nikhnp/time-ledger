@@ -1,6 +1,6 @@
 # Ledger Tools Audit — what each tool owes you, what overlaps, what ships off by default
 
-**Version:** 1.0 · 2026-08-28 · feeds IMPLEMENTATION_PLAN_v2 (P2-6, P2-7)
+**Version:** 1.1 · 2026-08-29 · feeds IMPLEMENTATION_PLAN_v2 (P2-6, P2-7) — post-P3 status: notes edit ✓ (P2-3), review wired ✓ (P3-1), Budget fold-into-Goals still optional, habit color picker UI + reminders still owed (P3 polish)
 **Method:** market research on what each tool category is expected to do (Zapier's habit-tracker review, Atlassian/Todoist kanban guides, GTD's five steps, Eisenhower-me/Asana matrix practice, NerdWallet/Equifax budgeting essentials, Strides/OKR goal trackers), combined with a code-level audit of Ledger v10.4.0-p1 (file:line references in the Phase-2 map) and your reported pain points.
 
 ---
@@ -73,12 +73,12 @@ one toggle in Settings → Tools to bring it back (your explicit ask).
 - **What the market expects** (GTD: capture → clarify → organize → reflect → engage): frictionless capture, and triage that **routes** each item somewhere real; an inbox that can't route is just a second pile.
 - **Actual (before):** could only make a task (goal required) or a note — no deadline, no habit, no free task, no navigation after triage; server's mark-done endpoint orphaned. This is why it "felt entirely unconnected".
 - **Shipped:** → Task (with "No goal" option), → **Deadline** (date picker → "Coming up" on Today), → Note, → **Habit** (7×/week default), Dismiss; every successful triage **navigates to the receiving tool**; footer documents the routing table.
-- **Still owed:** P2-4 wires the LLM `suggestions` endpoint into the daily close loop — the inbox becomes the place tomorrow gets planned from.
+- **Shipped (P2-4, p2d):** the close-the-day loop is live — suggestions feed the Reflect tab, tomorrow gets planned, and the weekly review (P3-1) reports planned-vs-done.
 
 ### 2.7 Notes — KEEP, default ON
 - **Expected:** create, search, delete, edit; date extraction.
 - **Actual:** search + delete + LLM date-extraction exist; **no edit**; manual add lives on Today only.
-- **Owed (P2-3):** note editing, manual date entry as a fallback when the LLM is down (small add in P2-6 window). Verdict: keep default ON.
+- **Shipped (P2-3, p2d):** inline note editing (pencil on every row). Manual date entry as an LLM-down fallback stays optional — the rule-based date parser (P2-9) now covers capture without the LLM. Verdict: keep default ON.
 
 ### 2.8 Screen time — KEEP, default OFF (new accounts)
 - **Expected:** quick manual entry, daily reference ring, weekly bars (Digital Wellbeing style).
@@ -131,8 +131,7 @@ Settings → Tools, `useToolEnabled` gating). P2-6 extends it with:
    transient-error auto-restart, readable errors.
 4. **Close-the-day loop** (P2-4): suggestions wired into a nightly review; tomorrow gets
    planned from the inbox.
-5. **Edit affordances** (P2-3): note editing, task label edit, activity correction —
-   append-only feels like a demo, not a tool.
+5. ~~**Edit affordances** (P2-3)~~ — SHIPPED p2d: note editing, Board card label edit-in-place, activity correction (edit + delete), important-date fix-in-place. Append-only is over.
 
 ---
 

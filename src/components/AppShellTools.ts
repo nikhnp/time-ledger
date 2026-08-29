@@ -1,7 +1,7 @@
 /* Shared dock/tool constants */
 import type { ViewId } from '@/store/useLedger'
 
-export const TOOL_LIST: ViewId[] = ['habits', 'screen', 'board', 'budget', 'goals', 'inbox', 'matrix', 'notes', 'people']
+export const TOOL_LIST: ViewId[] = ['habits', 'screen', 'board', 'budget', 'goals', 'inbox', 'matrix', 'notes', 'people', 'review']
 
 /* ============================================================
  * P2-6 — tool rationalization & presets (see TOOLS_AUDIT.md §3)
@@ -21,7 +21,7 @@ export const ADMIN_ONLY_TOOLS: string[] = ['people']
 
 /** The lean default dock preset — what a NEW user starts with:
  * the core pipeline (capture → plan → track → remember) only. */
-export const LEAN_PRESET: ViewId[] = ['habits', 'board', 'goals', 'inbox', 'notes']
+export const LEAN_PRESET: ViewId[] = ['habits', 'board', 'goals', 'inbox', 'notes', 'review']
 
 /** Preset for a role — admins also get People. The DB column default is
  * role-agnostic; the signup route applies the role-aware half of it. */
@@ -45,4 +45,5 @@ export const TOOL_HINTS: Record<string, string> = {
   budget: 'Weekly-hours lens over your Goals. No new data.',
   screen: 'Daily screen-time self-tracking with 7-day bars.',
   people: 'Household roster and admin actions. Admins only.',
+  review: 'Your week, read back to you — one aggregate request.',
 }

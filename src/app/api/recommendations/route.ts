@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
 import { assembleLedgerRaw, findScreenEntriesByRange } from '@/lib/neon-sql'
 import { LLM } from '@/lib/llm-server'
+import { RecommendationListSchema } from '@/lib/schemas'
 import { todayStr, isoDaysAgo } from '@/lib/dates'
 import type { EntryRecommendation } from '@/lib/types'
 
@@ -91,18 +92,26 @@ async function generateWithLLM(userId: string, ctx: Record<string, unknown>): Pr
     JSON.stringify(ctx, null, 2) +
     '\n\nSuggest 2-4 things they should record now.'
 
-  const raw = await LLM.chatJSON<Array<{ kind?: string; text?: string; goalId?: string }>>(userId, system, user)
-  if (!Array.isArray(raw)) return []
+  /* P3-2: strict zod contract via generateJson — schema-constrained decode,
+   * one repair round, timeout, breaker, budget; malformed output can never
+   * 500 this route (the heuristic fallback is the floor). */
+  const r = await LLM.generateJson({
+    userId,
+    route: 'recommendations',
+    schema: RecommendationListSchema,
+    system,
+    user,
+    maxTokens: 700,
+  })
+  if ('error' in r) return []
   const out: EntryRecommendation[] = []
-  for (const item of raw.slice(0, 4)) {
-    if (!item || typeof item.text !== 'string' || !item.text.trim()) continue
-    const kind = (['activity', 'habit', 'note', 'checkin', 'screen'] as const).includes(item.kind as EntryRecommendation['kind'])
-      ? (item.kind as EntryRecommendation['kind'])
-      : 'activity'
-    const goalId = typeof item.goalId === 'string' && Array.isArray(ctx.goals)
-      ? (ctx.goals as Array<{ id: string }>).find((g) => g.id === item.goalId)?.id
-      : undefined
-    out.push({ kind, text: item.text.trim().slice(0, 140), goalId })
+  for (const item of r.data.recommendations.slice(0, 4)) {
+    if (!item.text.trim()) continue
+    const goalId =
+      typeof item.goalId === 'string' && Array.isArray(ctx.goals)
+        ? (ctx.goals as Array<{ id: string }>).find((g) => g.id === item.goalId)?.id
+        : undefined
+    out.push({ kind: item.kind, text: item.text.trim().slice(0, 140), goalId })
   }
   return out
 }

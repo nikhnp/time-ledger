@@ -17,6 +17,7 @@ export default function WeekView() {
   const ledger = useLedger((s) => s.ledger)!
   const user = useLedger((s) => s.user)!
   const deleteNote = useLedger((s) => s.deleteNote)
+  const editNote = useLedger((s) => s.editNote)
   const showToast = useLedger((s) => s.showToast)
   const setSettingsOpen = useLedger((s) => s.setSettingsOpen)
 
@@ -59,6 +60,13 @@ export default function WeekView() {
     const ds = new Set(dates)
     return ledger.notes.filter((n) => ds.has(n.date)).sort((a, b) => (a.date < b.date ? 1 : -1))
   }, [ledger.notes, dates])
+
+  /* P2-9: dated items land on their day — the week renders them on it */
+  const weekDates2 = useMemo(() => new Set(dates), [dates])
+  const weekDated = useMemo(
+    () => ledger.importantDates.filter((d) => weekDates2.has(d.date)).sort((a, b) => (a.date < b.date ? -1 : 1)),
+    [ledger.importantDates, weekDates2],
+  )
 
   const spanId = w ? isoLocal(w.start) : ''
   const [wordsVersion, setWordsVersion] = useState(0)
@@ -193,11 +201,27 @@ export default function WeekView() {
         )}
       </div>
 
+      {/* P2-9: deadlines and future-dated items render on their day */}
+      {weekDated.length > 0 && (
+      <div className="card">
+        <Stamp icon="calendar">Dates this week</Stamp>
+        {weekDated.map((d) => {
+          const dw = new Date(d.date + 'T00:00:00Z').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' })
+          return (
+            <div className="deadline-row" key={d.id}>
+              <span><strong>{dw}</strong> · {d.label}</span>
+              <span className="count">{d.type}</span>
+            </div>
+          )
+        })}
+      </div>
+      )}
+
       {notesOn && (
       <div className="card">
         <Stamp icon="file">Notes from this week</Stamp>
         {weekNotes.length > 0
-          ? weekNotes.map((n) => <NoteRow key={n.id} note={n} showDate onDelete={deleteNote} />)
+          ? weekNotes.map((n) => <NoteRow key={n.id} note={n} showDate onDelete={deleteNote} onEdit={editNote} />)
           : <EmptyNote>No notes this week.</EmptyNote>}
         <p className="chart-note">streak right now: {currentStreak(ledger)} days</p>
       </div>

@@ -11,10 +11,15 @@ import type { MergeResult } from '@/lib/types'
 import { todayStr } from '@/lib/dates'
 
 interface Item {
-  kind: 'activity' | 'habit' | 'metric' | 'note' | 'highlight' | 'check-in'
+  kind: 'activity' | 'habit' | 'metric' | 'note' | 'highlight' | 'check-in' | 'date'
   on: boolean
   text: React.ReactNode
   act: unknown
+}
+
+function fmtShort(s: string): string {
+  const d = new Date(s + 'T00:00:00Z')
+  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' })
 }
 
 function buildItems(delta: ValidatedDelta, goalNames: Record<string, string>, habitNames: Record<string, string>, metricNames: Record<string, string>): Item[] {
@@ -52,7 +57,26 @@ function buildItems(delta: ValidatedDelta, goalNames: Record<string, string>, ha
     })
   })
   delta.newNotes.forEach((n) => {
-    items.push({ kind: 'note', on: true, text: <>“{n}”</>, act: n })
+    const text = typeof n === 'string' ? n : n.text
+    items.push({ kind: 'note', on: true, text: <>“{text}”</>, act: n })
+  })
+  /* P2-9: dated items — show the resolved date so a wrong parse can be
+   * corrected (or excluded) before it goes in the book */
+  delta.dates.forEach((dt) => {
+    items.push({
+      kind: 'date',
+      on: true,
+      text: (
+        <>
+          <strong>{dt.label}</strong>{' '}
+          <span className="mono" style={{ fontSize: '.7rem', color: 'var(--ink-faint)' }}>
+            → {fmtShort(dt.date)} · {dt.date}
+          </span>
+          <span className="mono" style={{ fontSize: '.68rem', color: 'var(--accent)' }}> {dt.type}</span>
+        </>
+      ),
+      act: dt,
+    })
   })
   if (delta.highlight) {
     items.push({ kind: 'highlight', on: true, text: <>Highlight: {delta.highlight}</>, act: delta.highlight })
@@ -96,7 +120,8 @@ export default function StructuredPreview({
       activities: on.filter((it) => it.kind === 'activity').map((it) => it.act as ValidatedDelta['activities'][number]),
       habits: on.filter((it) => it.kind === 'habit').map((it) => it.act as ValidatedDelta['habits'][number]),
       metrics: on.filter((it) => it.kind === 'metric').map((it) => it.act as ValidatedDelta['metrics'][number]),
-      newNotes: on.filter((it) => it.kind === 'note').map((it) => it.act as string),
+      newNotes: on.filter((it) => it.kind === 'note').map((it) => it.act as ValidatedDelta['newNotes'][number]),
+      dates: on.filter((it) => it.kind === 'date').map((it) => it.act as ValidatedDelta['dates'][number]),
       highlight: on.some((it) => it.kind === 'highlight') ? result.delta.highlight : undefined,
       checkIn: on.some((it) => it.kind === 'check-in') ? result.delta.checkIn : undefined,
     }
@@ -109,6 +134,12 @@ export default function StructuredPreview({
     if (c?.activities) bits.push(`${c.activities} activit${c.activities > 1 ? 'ies' : 'y'}`)
     if (c?.habits) bits.push(`${c.habits} habit${c.habits > 1 ? 's' : ''}`)
     if (c?.notes) bits.push(`${c.notes} note${c.notes > 1 ? 's' : ''}`)
+    if (c?.dates) {
+      // P2-9 verification UX: name the day the item landed on
+      const first = delta.dates[0]
+      const when = first ? new Date(first.date + 'T00:00:00Z').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' }) : ''
+      bits.push(`saved for ${when}`)
+    }
     showToast(`Merged into ${delta.date || todayStr()} ✓${bits.length ? ` — ${bits.join(', ')}` : ''}`)
     closeSheets()
     onDone()

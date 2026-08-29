@@ -5,9 +5,9 @@ import {
   countAdmins,
   updateUser,
   deleteSessionsByUser,
-  assembleLedgerRaw,
+  maxChangeId,
+  respondMutation,
 } from '@/lib/neon-sql'
-import { assembleLedger } from '@/lib/server/ledger'
 
 export const dynamic = 'force-dynamic'
 
@@ -54,5 +54,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ na
       return jsonError(400, 'unknown action (grant | revoke | kick)')
   }
 
-  return Response.json({ ledger: await assembleLedger(me.id) })
+  // P2-1: this mutates the TARGET user (role/sessions), not the actor's
+  // ledger — respond with just the current cursor (empty patch is a no-op).
+  return respondMutation(me.id, await maxChangeId())
 }

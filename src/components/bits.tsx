@@ -6,6 +6,7 @@ import { RoughBtn } from '@/components/rough/controls'
 import { isFlagged } from '@/lib/derivations'
 import { fmtDateShort } from '@/lib/dates'
 import type { NoteT } from '@/lib/types'
+import { useState } from 'react'
 
 export function Stamp({ icon, children }: { icon: string; children: React.ReactNode }) {
   return (
@@ -38,19 +39,48 @@ export function ViewHead({ title, sub }: { title: string; sub?: React.ReactNode 
 }
 
 export function NoteRow({
-  note, showDate, onDelete, onExtract,
-}: { note: NoteT; showDate?: boolean; onDelete: (id: string) => void; onExtract?: (id: string) => void }) {
+  note, showDate, onDelete, onExtract, onEdit,
+}: { note: NoteT; showDate?: boolean; onDelete: (id: string) => void; onExtract?: (id: string) => void; onEdit?: (id: string, text: string) => void }) {
   const flagged = isFlagged(note.text)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(note.text)
+
   return (
     <div className="note-row">
       {showDate && <span className="note-date">{fmtDateShort(note.date)}</span>}
-      <span className="note-text">
-        {note.text}
-        {flagged && (
-          <span className="washi" style={{ background: 'var(--mustard-soft)', color: 'var(--mustard)', marginLeft: 8 }}>flagged</span>
-        )}
-      </span>
+      {editing ? (
+        <span className="note-text" style={{ flex: 1, display: 'flex', gap: 6, alignItems: 'center' }}>
+          <input
+            autoFocus
+            type="text"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && draft.trim() && onEdit) { onEdit(note.id, draft.trim()); setEditing(false) }
+              if (e.key === 'Escape') { setEditing(false); setDraft(note.text) }
+            }}
+            style={{ flex: 1, fontSize: '.9rem' }}
+            aria-label="Edit note text"
+          />
+          <button className="note-extract" title="Save" onClick={() => { if (draft.trim() && onEdit) { onEdit(note.id, draft.trim()); setEditing(false) } }}>
+            <I name="check" />
+          </button>
+          <button className="note-del" title="Cancel" onClick={() => { setEditing(false); setDraft(note.text) }}>×</button>
+        </span>
+      ) : (
+        <span className="note-text">
+          {note.text}
+          {flagged && (
+            <span className="washi" style={{ background: 'var(--mustard-soft)', color: 'var(--mustard)', marginLeft: 8 }}>flagged</span>
+          )}
+        </span>
+      )}
       <span className="note-tools">
+        {onEdit && !editing && (
+          <button className="note-extract" onClick={() => setEditing(true)} title="Edit note">
+            <I name="pencil" />
+          </button>
+        )}
         {flagged && onExtract && (
           <button className="note-extract" onClick={() => onExtract(note.id)} title="Read a date out of this note (LLM)">
             <I name="calplus" />

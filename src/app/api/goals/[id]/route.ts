@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
-import { findGoalByUserAndId, updateGoal, deleteGoal, assembleLedgerRaw } from '@/lib/neon-sql'
+import { findGoalByUserAndId, updateGoal, deleteGoal, logChanges, maxChangeId, respondMutation } from '@/lib/neon-sql'
+import { db } from '@/lib/db'
 import { validDateStr } from '@/lib/server/ledger'
 import type { Milestone } from '@/lib/types'
 
@@ -8,7 +9,7 @@ export const dynamic = 'force-dynamic'
 
 /**
  * PATCH /api/goals/[id]
- * v9: uses raw SQL.
+ * P2-1: responds with a per-entity patch + cursor instead of the full ledger.
  */
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getSessionUser(req)
@@ -26,6 +27,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     weeklyTargetHours?: number
     color?: string | null
     deadline?: Date | null
+    kind?: 'goal' | 'hobby'
     milestones?: Milestone[]
   } = {}
 
@@ -35,20 +37,26 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (typeof body.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(body.color)) patch.color = body.color
   if (body.deadline === null) patch.deadline = null
   else if (validDateStr(body.deadline)) patch.deadline = new Date(body.deadline + 'T00:00:00Z')
+  // P2-2: promote a goal to a hobby (or back) without touching its history
+  if (body.kind === 'hobby' || body.kind === 'goal') patch.kind = body.kind
   if (Array.isArray(body.milestones)) {
     patch.milestones = body.milestones
       .filter((m): m is Milestone => !!m && typeof m === 'object' && typeof (m as Milestone).label === 'string')
       .map((m) => ({ label: m.label.slice(0, 120), done: !!m.done }))
   }
 
+  const sinceId = await maxChangeId()
   await updateGoal(user.id, id, patch)
-  return Response.json({ ledger: await assembleLedgerRaw(user.id) })
+  return respondMutation(user.id, sinceId)
 }
 
 /**
  * DELETE /api/goals/[id] — v10.5
- * Removes the goal; its tasks cascade via FK. Activities keep their historical
- * goalId (activity.goalId is a loose reference, not an FK) so past hours stay.
+ * Removes the goal; its tasks cascade via FK onDelete: Cascade. Activities
+ * keep their historical goalId (a loose reference, not an FK) so past hours
+ * stay. P2-1: the DB-level task cascade can't self-report — the deleted task
+ * ids are logged explicitly inside the same transaction so delta clients
+ * drop them too.
  */
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getSessionUser(req)
@@ -56,6 +64,15 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const { id } = await params
   if (!(await findGoalByUserAndId(user.id, id))) return jsonError(404, 'goal not found')
 
-  await deleteGoal(user.id, id)
-  return Response.json({ ledger: await assembleLedgerRaw(user.id) })
+  const cascaded = await db.task.findMany({ where: { userId: user.id, goalId: id }, select: { id: true } })
+  const sinceId = await maxChangeId()
+  await db.$transaction(async (tx) => {
+    await logChanges(
+      tx,
+      user.id,
+      cascaded.map((t) => ({ entity: 'task' as const, entityId: t.id, op: 'delete' as const })),
+    )
+    await deleteGoal(user.id, id, tx)
+  })
+  return respondMutation(user.id, sinceId)
 }

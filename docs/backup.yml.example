@@ -1,0 +1,36 @@
+# P3-4: nightly pg_dump backup — copy this file to .github/workflows/backup.yml
+# (the delivery zips intentionally exclude .github/**, so the copy is manual).
+# Prerequisites:
+#   1. Repo → Settings → Secrets and variables → Actions → New repository secret
+#        Name: BACKUP_DATABASE_URL   Value: your Neon connection string
+#      (use a read-only/branch URL if you can — this job only reads)
+#   2. Keep the default 30-day artifact retention (set below).
+# Restore drill: see docs/RUNBOOK.md §4.
+name: nightly-backup
+
+on:
+  schedule:
+    - cron: '30 2 * * *' # 02:30 UTC daily
+  workflow_dispatch: {} # manual trigger for drills
+
+permissions:
+  contents: none
+
+jobs:
+  pg_dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Dump database
+        env:
+          DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+        run: |
+          pg_dump --format=custom --no-owner --no-privileges \
+            --file "ledger-backup-$(date -u +%Y%m%d).dump" "$DATABASE_URL"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ledger-backup-${{ github.run_id }}
+          path: ledger-backup-*.dump
+          retention-days: 30
+          if-no-files-found: error

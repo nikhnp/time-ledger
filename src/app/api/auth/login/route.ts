@@ -3,6 +3,7 @@ import {
   findUserByName,
   createSessionRow,
   assembleLedgerRaw,
+  maxChangeId,
 } from '@/lib/neon-sql'
 import {
   sessionCookieHeader,
@@ -74,13 +75,14 @@ export async function POST(req: NextRequest) {
     const expiresAt = new Date(Date.now() + 30 * 86400000)
     await createSessionRow({ token, userId: user.id, expiresAt })
 
-    // Return REAL ledger
-    const ledger = await assembleLedgerRaw(user.id)
+    // Return REAL ledger (P2-1: + change-feed cursor so the device can delta-sync)
+    const [ledger, cursor] = await Promise.all([assembleLedgerRaw(user.id), maxChangeId()])
 
     return new Response(
       JSON.stringify({
         user: { id: user.id, name: user.name, role: user.role },
         ledger,
+        cursor,
       }),
       {
         status: 200,

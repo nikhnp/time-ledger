@@ -16,6 +16,7 @@ export default function MonthView() {
   const ledger = useLedger((s) => s.ledger)!
   const user = useLedger((s) => s.user)!
   const deleteNote = useLedger((s) => s.deleteNote)
+  const editNote = useLedger((s) => s.editNote)
   const showToast = useLedger((s) => s.showToast)
   const setSettingsOpen = useLedger((s) => s.setSettingsOpen)
 
@@ -61,6 +62,13 @@ export default function MonthView() {
   const monthNotes = useMemo(
     () => ledger.notes.filter((n) => isoMonthOf(n.date) === m).sort((a, b) => (a.date < b.date ? 1 : -1)),
     [ledger.notes, m]
+  )
+
+  /* P2-9: future-dated items render on their month ("deadline after exactly
+   * a week" must be findable where the day lives) */
+  const monthDated = useMemo(
+    () => ledger.importantDates.filter((d) => isoMonthOf(d.date) === m).sort((a, b) => (a.date < b.date ? -1 : 1)),
+    [ledger.importantDates, m],
   )
 
   const heatCellsData = useMemo(() => heatCells((date) => {
@@ -188,8 +196,21 @@ export default function MonthView() {
       <div className="card">
         <Stamp icon="file">Notes from this month</Stamp>
         {monthNotes.length > 0
-          ? monthNotes.map((n) => <NoteRow key={n.id} note={n} showDate onDelete={deleteNote} />)
+          ? monthNotes.map((n) => <NoteRow key={n.id} note={n} showDate onDelete={deleteNote} onEdit={editNote} />)
           : <EmptyNote>No notes this month.</EmptyNote>}
+      </div>
+      )}
+
+      {/* P2-9: dated items on their days */}
+      {monthDated.length > 0 && (
+      <div className="card">
+        <Stamp icon="calendar">Dates this month</Stamp>
+        {monthDated.map((d) => (
+          <div className="deadline-row" key={d.id}>
+            <span><strong>{fmtDate(d.date)}</strong> · {d.label}</span>
+            <span className="count">{d.type}</span>
+          </div>
+        ))}
       </div>
       )}
     </>

@@ -1,60 +1,27 @@
 import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
-import { assembleLedgerRaw } from '@/lib/neon-sql'
+import { buildSuggestionsContext } from '@/lib/neon-sql'
 import { LLM } from '@/lib/llm-server'
-import { todayIn, isoLocal, s2d } from '@/lib/dates'
-import type { Ledger, DayT } from '@/lib/types'
+import { QuestionSetSchema } from '@/lib/schemas'
+import { todayIn } from '@/lib/dates'
 
 export const dynamic = 'force-dynamic'
 
 /**
  * GET /api/suggestions
  *
- * Returns personalized question suggestions for the user to answer during
- * recording or manual entry. Uses LLM (with fallback chain) to generate
- * 3-5 questions based on the day's data.
- *
- * Falls back to a static list of generic questions if LLM is unavailable.
+ * Returns personalized question suggestions for the evening reflection.
+ * P2-4 (the diet): the route used to pay assembleLedgerRaw (read everything
+ * ever) per call for its context — now six scoped queries read ~100 rows.
+ * Response shape unchanged; LLM down → static fallback questions still render.
  */
 export async function GET(req: NextRequest) {
   const me = await getSessionUser(req)
   if (!me) return jsonError(401, 'not logged in')
 
   try {
-    const ledger = await assembleLedgerRaw(me.id)
     const today = todayIn(me.tz) // P1-5: the user's local day
-    const day: DayT | undefined = ledger.days.find((d) => d.date === today)
-    // "yesterday" relative to the user's local today (not UTC's)
-    const yesterday = isoLocal(new Date(s2d(today).getTime() - 86400000))
-    const yesterdayDay: DayT | undefined = ledger.days.find((d) => d.date === yesterday)
-
-    // Build context about the day
-    const todayHours = day ? day.activities.reduce((s, a) => s + a.hours, 0) : 0
-    const todayHabitsDone = day ? Object.entries(day.habits).filter(([hid, done]) => done && !ledger.habits.find((h) => h.id === hid)?.archived).length : 0
-    const todayHabitsTotal = ledger.habits.filter((h) => !h.archived).length
-    const pendingTasks = ledger.tasks.filter((t) => t.status !== 'done').length
-    const overdueTasks = ledger.tasks.filter((t) => t.status !== 'done' && t.urgent).length
-    const upcomingDeadlines = ledger.importantDates.filter((d) => {
-      const days = (new Date(d.date).getTime() - new Date(today).getTime()) / 86400000
-      return days >= 0 && days <= 7
-    })
-    const inboxCount = ledger.inbox.length
-    const yesterdayHighlight = yesterdayDay?.highlight ?? null
-
-    const context = {
-      today,
-      todayHours,
-      todayHabitsDone,
-      todayHabitsTotal,
-      pendingTasks,
-      overdueTasks,
-      upcomingDeadlines: upcomingDeadlines.map((d) => `${d.label} (${d.date})`),
-      inboxCount,
-      yesterdayHighlight,
-      goals: ledger.goals.map((g) => `${g.name} (${g.id})`).slice(0, 5),
-      habits: ledger.habits.map((h) => h.name).slice(0, 5),
-    }
-
+    const context = await buildSuggestionsContext(me.id, today)
     const questions = await generateQuestions(me.id, context)
     return Response.json({ questions })
   } catch (err) {
@@ -70,17 +37,29 @@ async function generateQuestions(userId: string, ctx: Record<string, unknown>): 
     'The user is logging their day. Generate 3-5 short, specific questions they might want to answer ' +
     'in their day entry. Each question should be 1-2 sentences max, conversational, and reference ' +
     'specific data from their day (e.g. "You spent 2 hours on Deep Work — what made it click?" rather than generic "How was your day?"). ' +
-    'Output ONLY a JSON array of strings. No prose, no markdown fences.'
+    'Output ONLY JSON: {"questions":["..."]}. No prose, no markdown fences.'
 
   const user =
     `Today is ${ctx.today}. Here is what I know about the user's day so far:\n` +
     JSON.stringify(ctx, null, 2) + '\n\n' +
     'Generate 3-5 personalized reflection questions for them to consider.'
 
+  /* P3-2: strict zod contract, provider-native schema, one repair round,
+   * 8s timeout, circuit breaker, budget. No 500s from malformed output. */
   try {
-    const text = await LLM.chatJSON<string[]>(userId, system, user)
-    if (Array.isArray(text) && text.length > 0) {
-      return text.slice(0, 5).map((q) => String(q).slice(0, 200))
+    const r = await LLM.generateJson({
+      userId,
+      route: 'suggestions',
+      schema: QuestionSetSchema,
+      system,
+      user,
+      maxTokens: 800,
+    })
+    if ('data' in r && r.data.questions.length > 0) {
+      return r.data.questions.slice(0, 5).map((q) => q.slice(0, 200))
+    }
+    if ('error' in r && r.error === 'budget') {
+      console.warn('suggestions: daily LLM budget reached — static fallback')
     }
   } catch (err) {
     console.warn('LLM suggestions failed, using fallback:', err instanceof Error ? err.message : err)

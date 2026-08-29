@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
-import { findGoalByUserAndId, createTask, assembleLedgerRaw } from '@/lib/neon-sql'
+import { findGoalByUserAndId, createTask, maxChangeId, respondMutation } from '@/lib/neon-sql'
 import { todayIn } from '@/lib/dates'
 import { generateId } from '@/lib/server/cuid'
 
@@ -30,6 +30,7 @@ export async function POST(req: NextRequest) {
 
   const priority = body.priority === 'high' ? 'high' : 'normal'
   const status = body.status === 'doing' || body.status === 'done' ? body.status : 'todo'
+  const sinceId = await maxChangeId()
   await createTask({
     id: generateId(),
     userId: user.id,
@@ -41,5 +42,5 @@ export async function POST(req: NextRequest) {
     important: typeof body.important === 'boolean' ? body.important : true,
     lastTouched: new Date(todayIn(user.tz) + 'T00:00:00Z'),
   })
-  return Response.json({ ledger: await assembleLedgerRaw(user.id) })
+  return respondMutation(user.id, sinceId)
 }

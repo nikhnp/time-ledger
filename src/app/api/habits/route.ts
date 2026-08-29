@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
-import { findHabitByUserAndId, findHabitsByUser, createHabit as createHabitRow, assembleLedgerRaw } from '@/lib/neon-sql'
+import { findHabitByUserAndId, findHabitsByUser, createHabit as createHabitRow, maxChangeId, respondMutation } from '@/lib/neon-sql'
 import { generateId } from '@/lib/server/cuid'
 
 export const dynamic = 'force-dynamic'
@@ -33,6 +33,7 @@ export async function POST(req: NextRequest) {
   }
 
   const existing = await findHabitsByUser(me.id)
+  const sinceId = await maxChangeId()
   await createHabitRow({
     userId: me.id,
     id,
@@ -41,6 +42,5 @@ export async function POST(req: NextRequest) {
     sortOrder: existing.length,
   })
 
-  const ledger = await assembleLedgerRaw(me.id)
-  return Response.json({ ledger })
+  return respondMutation(me.id, sinceId)
 }

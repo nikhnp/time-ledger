@@ -9,6 +9,7 @@ import {
   maskStoredApiKey,
 } from '@/lib/neon-sql'
 import { generateId } from '@/lib/server/cuid'
+import { llmUsage } from '@/lib/server/llm-ops'
 import type { LlmConfigClientT } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
@@ -29,7 +30,9 @@ export async function GET(req: NextRequest) {
     enabled: r.enabled,
     isSystem: false,
   }))
-  return Response.json({ settings: out })
+  /* P3-2: usage panel data — today's tokens vs budget, month per route */
+  const usage = await llmUsage(me.id)
+  return Response.json({ settings: out, usage })
 }
 
 /** POST /api/settings/llm/me — add a new per-user LLM setting. */

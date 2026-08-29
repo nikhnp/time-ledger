@@ -208,7 +208,7 @@ export default function SettingsModal() {
  * ============================================================ */
 
 import { useEffect } from 'react'
-import type { LlmConfigClientT, DockConfigT } from '@/lib/types'
+import type { LlmConfigClientT, DockConfigT, LlmUsageT } from '@/lib/types'
 
 const LLM_PROVIDER_LABELS: Record<string, string> = {
   gemini: 'Google Gemini',
@@ -237,6 +237,7 @@ function V10LlmSection() {
   const showToast = useLedger((s) => s.showToast)
 
   const [settings, setSettings] = useState<LlmConfigClientT[]>([])
+  const [usage, setUsage] = useState<LlmUsageT | null>(null)
   const [provider, setProvider] = useState('gemini')
   const [model, setModel] = useState(DEFAULT_MODELS.gemini)
   const [apiKey, setApiKey] = useState('')
@@ -247,7 +248,10 @@ function V10LlmSection() {
   async function load() {
     setLoading(true)
     const r = await fetchLlmSettings()
-    if (r) setSettings(r)
+    if (r) {
+      setSettings(r.settings)
+      setUsage(r.usage ?? null)
+    }
     setLoading(false)
   }
 
@@ -290,6 +294,17 @@ function V10LlmSection() {
   return (
     <div className="settings-section">
       <p className="settings-h">LLM providers (v10)</p>
+      {usage && (
+        <p className="field-hint" style={{ marginBottom: 10 }}>
+          AI usage today: <strong>{usage.todayTokens.toLocaleString()}</strong> / {usage.limit.toLocaleString()} tokens
+          {usage.monthByRoute.length > 0 && (
+            <>
+              {' '}· this month:{' '}
+              {usage.monthByRoute.slice(0, 4).map((m) => `${m.route} ${(m.tokens / 1000).toFixed(1)}k`).join(', ')}
+            </>
+          )}
+        </p>
+      )}
       <p className="field-hint" style={{ marginBottom: 12 }}>
         Your settings are saved to the database and used for voice/paste structuring,
         note date extraction, and question suggestions. If yours don&apos;t work,

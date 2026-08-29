@@ -8,6 +8,7 @@ import { LLM } from '@/lib/llm'
 export default function NotesView() {
   const ledger = useLedger((s) => s.ledger)!
   const deleteNote = useLedger((s) => s.deleteNote)
+  const editNote = useLedger((s) => s.editNote)
   const showToast = useLedger((s) => s.showToast)
   const setSettingsOpen = useLedger((s) => s.setSettingsOpen)
   const addImportantDate = useLedger((s) => s.addImportantDate)
@@ -53,7 +54,7 @@ export default function NotesView() {
           flagged notes carry a calendar button — the LLM reads them and adds real dates to Coming up
         </p>
         {notes.length > 0
-          ? notes.map((n) => <NoteRow key={n.id} note={n} showDate onDelete={deleteNote} onExtract={busy ? undefined : extract} />)
+          ? notes.map((n) => <NoteRow key={n.id} note={n} showDate onDelete={deleteNote} onEdit={editNote} onExtract={busy ? undefined : extract} />)
           : <EmptyNote>{q ? `Nothing matches "${q}".` : 'No notes yet.'}</EmptyNote>}
       </div>
     </>

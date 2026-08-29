@@ -34,13 +34,18 @@ model User {
   isActive              Boolean   @default(true) // false = deactivated by admin
   passwordResetToken    String? // hex token; null when not in reset flow
   passwordResetExpires  DateTime? // when the reset token expires
-  // P2-6: lean default tool set for NEW users (matrix/budget/screen/people
-  // start OFF — lenses & niche, see TOOLS_AUDIT.md §3). Role-aware half
-  // (+people for admins) is applied by the signup route. Existing users'
-  // saved dockConfig is never touched; migration 3_p2_presets mirrors this
-  // default in SQL.
-  dockConfig            String    @default("{\"enabled\":[\"habits\",\"board\",\"goals\",\"inbox\",\"notes\"],\"keepInDock\":[\"habits\"]}") // per-user dock customization (JSON)
+  // P2-6: lean default tool set for NEW users (matrix/budget/screen
+  // start OFF — lenses & niche, see TOOLS_AUDIT.md §3). P3-1 adds review.
+  // Role-aware half (+people for admins) is applied by the signup route.
+  // Existing users' saved dockConfig is never touched; migrations
+  // 3_p2_presets + 9_p3_review_default mirror this default in SQL.
+  dockConfig            String    @default("{\"enabled\":[\"habits\",\"board\",\"goals\",\"inbox\",\"notes\",\"review\"],\"keepInDock\":[\"habits\"]}") // per-user dock customization (JSON)
+  // P2-1: highest ChangeLog id pruned for this user. A delta client whose
+  // cursor is below this watermark may have missed pruned changes, so
+  // /api/ledger?since=<cursor> falls back to a full ledger for it.
+  syncWatermark         Int       @default(0)
   llmSettings           LlmSetting[]
+  llmCalls              LlmCall[]
   adminActions          AdminAction[]  @relation("AdminActor")
   adminActionsTarget    AdminAction[]  @relation("AdminTarget")
 
@@ -58,6 +63,7 @@ model User {
   inboxItems     InboxItem[]
   backups        UserBackup[]
   screenEntries  ScreenEntry[]
+  changeLogs     ChangeLog[]
 }
 
 /// LLM credentials — either system-wide (userId = null) or per-user.
@@ -131,6 +137,9 @@ model Goal {
   weeklyTargetHours Float    @default(8)
   color             String? // stable hex; null = derived from palette
   sortOrder         Int      @default(0)
+  // P2-2: 'goal' | 'hobby'. Hobbies differ from goals socially (no deadline
+  // pressure), not structurally — same hours logging, tasks and colors.
+  kind              String   @default("goal")
   milestones        String   @default("[]") // JSON: [{label, done}]
   createdAt         DateTime @default(now())
 
@@ -208,6 +217,10 @@ model Day {
   date      DateTime
   highlight String?
   checkIn   String? // JSON: {question, answer}
+  // P2-4: tomorrow's plan — JSON array of {goalId, hours, note}. Written by
+  // PATCH /api/days/[date]; surfaced as the next-morning "Tonight you
+  // planned…" banner. A suggestion, never an auto-write.
+  plan      String?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -224,10 +237,19 @@ model Activity {
   end       String? // "11:45"
   label     String?
   createdAt DateTime @default(now())
+  // P2-3: set only by client edits (PATCH /api/activities/[id]) — createdAt
+  // stays untouched so provenance is preserved.
+  updatedAt DateTime?
+  // P2-10: client-side idempotency key. A replayed offline capture upserts
+  // on (userId, clientId) instead of appending a duplicate row.
+  clientId  String?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, date])
+  // P2-5: per-goal rolls (week view, review, derivations) scan by goal.
+  @@index([userId, goalId, date])
+  @@unique([userId, clientId])
 }
 
 model DayHabit {
@@ -239,6 +261,8 @@ model DayHabit {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@id([userId, date, habitId])
+  // P2-5: the consistency heatmap scans by habit, not by day.
+  @@index([userId, habitId, date])
 }
 
 model DayMetric {
@@ -250,6 +274,8 @@ model DayMetric {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@id([userId, date, metricId])
+  // P2-5: was entirely unindexed before.
+  @@index([userId, metricId, date])
 }
 
 model Note {
@@ -258,10 +284,13 @@ model Note {
   date      DateTime
   text      String
   createdAt DateTime @default(now())
+  // P2-10: idempotency key for offline replay (see Activity.clientId).
+  clientId  String?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, date])
+  @@unique([userId, clientId])
 }
 
 model InboxItem {
@@ -293,4 +322,55 @@ model ScreenEntry {
 
   @@unique([userId, date, appName])
   @@index([userId, date])
+}
+
+/* ---------- P2-1: delta sync (per-user change feed) ---------- */
+
+/// Append-only feed of every ledger mutation. Written in the SAME
+/// transaction as the data change, so /api/ledger?since=<cursor> can return
+/// exactly what a client missed and mutations can respond with a small
+/// per-entity patch instead of re-shipping the whole ledger.
+/// entity: goal | task | habit | metric | importantDate | day | activity |
+///         dayHabit | dayMetric | note | inbox
+/// op:     upsert (fetch fresh row) | delete (drop it client-side).
+/// Day-scoped rows (day/activity/dayHabit/dayMetric) also carry entityDate
+/// (YYYY-MM-DD): the patch re-folds those days from current data.
+/// ScreenEntry changes are NOT logged — screen time has its own API/state,
+/// outside the Ledger. Backup restore writes rows directly, so it bumps
+/// User.syncWatermark instead (forces a one-time full sync).
+model ChangeLog {
+  id         Int      @id @default(autoincrement())
+  userId     String
+  entity     String
+  entityId   String // row id; day-scoped rows use their natural key
+  entityDate String? // YYYY-MM-DD when the change is day-scoped
+  op         String   @default("upsert")
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, id])
+}
+
+/* ---------- P3-2: LLM cost control ---------- */
+
+/// One row per LLM invocation (every generateJson / chat call). Powers the
+/// per-user daily token budget (LLM_DAILY_TOKEN_BUDGET, default 50k) and the
+/// usage panel in Settings. Failed calls log too — that's where the money
+/// can leak.
+model LlmCall {
+  id              String   @id @default(cuid())
+  userId          String? // null = system-level call
+  route           String // 'suggestions' | 'recommendations' | 'chat' | 'structure' | 'extract-date' | 'write-words' | 'test'
+  provider        String
+  model           String
+  promptTokens    Int      @default(0)
+  completionTokens Int     @default(0)
+  latencyMs       Int      @default(0)
+  ok              Boolean  @default(true)
+  createdAt       DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }

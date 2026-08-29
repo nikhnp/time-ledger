@@ -4,6 +4,7 @@ import {
   createSessionRow,
   updateUser,
   assembleLedgerRaw,
+  maxChangeId,
 } from '@/lib/neon-sql'
 import { limit, clientIp, POLICY } from '@/lib/server/rate-limit'
 
@@ -72,10 +73,11 @@ export async function POST(req: NextRequest) {
     const expiresAt = new Date(Date.now() + 30 * 86400000)
     await createSessionRow({ token: sessionToken, userId: user.id, expiresAt })
 
-    const ledger = await assembleLedgerRaw(user.id)
+    const [ledger, cursor] = await Promise.all([assembleLedgerRaw(user.id), maxChangeId()])
     return new Response(JSON.stringify({
       user: { id: user.id, name: user.name, role: user.role },
       ledger,
+      cursor,
     }), {
       status: 200,
       headers: {

@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
-import { findHabitByUserAndId, updateHabit, deleteHabit, assembleLedgerRaw } from '@/lib/neon-sql'
+import { findHabitByUserAndId, updateHabit, deleteHabit, maxChangeId, respondMutation } from '@/lib/neon-sql'
+import { db } from '@/lib/db'
 
 export const dynamic = 'force-dynamic'
 
@@ -30,8 +31,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   }
   if (typeof body.archived === 'boolean') patch.archived = body.archived
 
+  const sinceId = await maxChangeId()
   await updateHabit(user.id, id, patch)
-  return Response.json({ ledger: await assembleLedgerRaw(user.id) })
+  return respondMutation(user.id, sinceId)
 }
 
 /**
@@ -45,6 +47,11 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const { id } = await params
   if (!(await findHabitByUserAndId(user.id, id))) return jsonError(404, 'habit not found')
 
-  await deleteHabit(user.id, id)
-  return Response.json({ ledger: await assembleLedgerRaw(user.id) })
+  // P1-4/P2-1: habit + its per-day check rows + their change-log rows commit
+  // together, so delta clients re-fold exactly the affected days.
+  const sinceId = await maxChangeId()
+  await db.$transaction(async (tx) => {
+    await deleteHabit(user.id, id, tx)
+  })
+  return respondMutation(user.id, sinceId)
 }

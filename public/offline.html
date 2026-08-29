@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Ledger — offline</title>
+  <style>
+    body {
+      margin: 0; min-height: 100dvh; display: grid; place-items: center;
+      background: #f5f1e8; color: #2f3a3d;
+      font-family: ui-sans-serif, system-ui, sans-serif; text-align: center; padding: 24px;
+    }
+    h1 { font-size: 1.4rem; margin: 0 0 8px; }
+    p { margin: 0; color: #6b7a7d; }
+    button {
+      margin-top: 18px; padding: 10px 18px; border: 2px solid #4C7D8C; border-radius: 10px;
+      background: #4C7D8C; color: #fff; font-weight: 600; cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>You&apos;re offline</h1>
+    <p>The book can&apos;t reach its shelf right now.<br/>Entries you capture offline are queued and will sync when you reconnect.</p>
+    <button onclick="location.reload()">Try again</button>
+  </main>
+</body>
+</html>

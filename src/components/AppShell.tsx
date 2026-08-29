@@ -7,6 +7,7 @@ import { I } from '@/components/Icon'
 import TodayView from '@/components/views/TodayView'
 import WeekView from '@/components/views/WeekView'
 import MonthView from '@/components/views/MonthView'
+import WeekReviewView from '@/components/views/WeekReviewView'
 import HabitsView from '@/components/views/HabitsView'
 import BoardView from '@/components/views/BoardView'
 import BudgetView from '@/components/views/BudgetView'
@@ -26,19 +27,19 @@ import { TOOL_LIST, ADMIN_ONLY_TOOLS } from '@/components/AppShellTools'
 /* ---------- dock ---------- */
 
 const VIEW_TITLES: Record<ViewId, string> = {
-  today: 'Today', week: 'Week', month: 'Month', habits: 'Habits', board: 'Board',
+  today: 'Today', week: 'Week', month: 'Month', review: 'Review', habits: 'Habits', board: 'Board',
   budget: 'Budget', goals: 'Goals', inbox: 'Inbox', matrix: 'Matrix', notes: 'Notes',
   people: 'People', screen: 'Screen',
 }
 const DOCK_ICONS: Record<ViewId, string> = {
-  today: 'sun', week: 'calendar', month: 'grid', habits: 'check', board: 'columns',
+  today: 'sun', week: 'calendar', month: 'grid', review: 'book', habits: 'check', board: 'columns',
   budget: 'gauge', goals: 'target', inbox: 'mail', matrix: 'layout', notes: 'file',
   people: 'house', screen: 'phone',
 }
 /** every optional tool, in More-sheet order (Screen time first — new in v11) */
-const MORE_ITEMS: ViewId[] = ['screen', 'habits', 'board', 'budget', 'goals', 'inbox', 'matrix', 'notes', 'people']
+const MORE_ITEMS: ViewId[] = ['review', 'screen', 'habits', 'board', 'budget', 'goals', 'inbox', 'matrix', 'notes', 'people']
 const MORE_COLORS: Record<string, string> = {
-  screen: '#6E93A0', board: '#C96F4A', budget: '#96829F', goals: '#4C7D8C', inbox: '#C0A058',
+  review: '#4C7D8C', screen: '#6E93A0', board: '#C96F4A', budget: '#96829F', goals: '#4C7D8C', inbox: '#C0A058',
   matrix: '#7E9A6B', notes: '#A29272', people: '#B5858F',
   settings: '#C0A058', admin: '#B95F52',
 }
@@ -155,6 +156,7 @@ function Dock() {
 function TopBar() {
   const user = useLedger((s) => s.user)
   const logout = useLedger((s) => s.logout)
+  const pending = useLedger((s) => s.pending)
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -183,6 +185,12 @@ function TopBar() {
         <span className="brand-name">Ledger</span>
       </div>
       <div className="topbar-right">
+        {/* P2-10: truth-telling chip — offline captures queue and replay */}
+        {pending > 0 && (
+          <span className="washi" style={{ background: 'var(--mustard-soft)', color: 'var(--mustard)' }} title="Queued entries replay when you're back online">
+            offline — {pending} queued
+          </span>
+        )}
         {/* v11: the profile chip opens a small profile menu — NOT settings.
          * Settings and Admin settings live in the More sheet. */}
         <div className="profile-wrap" ref={menuRef}>
@@ -233,7 +241,7 @@ function ImpersonationBanner() {
 /* ---------- the shell ---------- */
 
 const VIEWS: Record<ViewId, React.ComponentType> = {
-  today: TodayView, week: WeekView, month: MonthView, habits: HabitsView, board: BoardView,
+  today: TodayView, week: WeekView, month: MonthView, review: WeekReviewView, habits: HabitsView, board: BoardView,
   budget: BudgetView, goals: GoalsView, inbox: InboxView, matrix: MatrixView, notes: NotesView,
   people: PeopleView, screen: ScreenTimeView,
 }
@@ -251,6 +259,37 @@ export default function AppShell() {
     const ro = new ResizeObserver(measure)
     ro.observe(dock)
     return () => ro.disconnect()
+  }, [])
+
+  /* P2-1: pull any changes the device missed while asleep/offline (another
+   * tab, another device, or an admin restore). Cheap no-op when the cursor
+   * is current; a full sync if the server pruned what we never saw. */
+  useEffect(() => {
+    const wake = () => { void useLedger.getState().resync(); void useLedger.getState().drainOutbox() }
+    window.addEventListener('online', wake)
+    window.addEventListener('focus', wake)
+    document.addEventListener('visibilitychange', wake)
+    /* P2-10: the outbox also drains on a quiet interval, so entries replay
+     * even if the online event never fires (flaky networks, background tabs) */
+    const drain = setInterval(() => { void useLedger.getState().drainOutbox() }, 60_000)
+    return () => {
+      window.removeEventListener('online', wake)
+      window.removeEventListener('focus', wake)
+      document.removeEventListener('visibilitychange', wake)
+      clearInterval(drain)
+    }
+  }, [])
+
+  /* P3-3: register the hand-rolled service worker (production only) — it
+   * caches the app shell for offline opens; capture itself rides the P2-10
+   * outbox. Kill-switch: unregister via the message hook in sw.js. */
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'production') return
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return
+    const onLoad = () => { void navigator.serviceWorker.register('/sw.js').catch(() => { /* optional feature */ }) }
+    if (document.readyState === 'complete') onLoad()
+    else window.addEventListener('load', onLoad, { once: true })
+    return () => window.removeEventListener('load', onLoad)
   }, [])
 
   /* if the current view's tool got disabled (or is admin-only for this

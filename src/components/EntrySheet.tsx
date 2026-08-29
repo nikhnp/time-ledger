@@ -14,8 +14,9 @@ import { FocusTimer } from '@/components/FocusModal'
 import { Speech } from '@/lib/speech'
 import { LLM } from '@/lib/llm'
 import { validateDelta, type ValidatedDelta } from '@/lib/derivations'
-import { toMin, hmDate, todayStr } from '@/lib/dates'
-import type { EntryRecommendation, MergeResult } from '@/lib/types'
+import { parseDateWords } from '@/lib/date-words'
+import { toMin, hmDate, todayStr, daysUntil } from '@/lib/dates'
+import type { EntryRecommendation, MergeResult, DayPlanEntry } from '@/lib/types'
 
 type Preview = { delta: ValidatedDelta; skipped: string[] } | null
 
@@ -54,6 +55,8 @@ function EntrySheetInner() {
   const entryTab = useLedger((s) => s.entryTab)
   const setEntryTab = useLedger((s) => s.setEntryTab)
   const closeSheets = useLedger((s) => s.closeSheets)
+  const activityEdit = useLedger((s) => s.activityEdit)
+  const ledger = useLedger((s) => s.ledger)!
 
   const [recs, setRecs] = useState<EntryRecommendation[] | null>(null)
   const [recsBusy, setRecsBusy] = useState(true)
@@ -82,6 +85,24 @@ function EntrySheetInner() {
     }
   }
 
+  /* P2-3: edit mode replaces the whole sheet — same fields, prefilled,
+   * with a Delete button (confirm step included). */
+  if (activityEdit) {
+    const day = ledger.days.find((d) => d.date === activityEdit.date)
+    const act = day?.activities.find((a) => a.id === activityEdit.id)
+    if (act) {
+      return (
+        <>
+          <div className="sheet-scrim open" onClick={closeSheets} />
+          <div className="sheet open" role="dialog" aria-label="Correct an entry" style={{ bottom: 'calc(var(--dock-h) + 26px)' }}>
+            <div className="sheet-handle" />
+            <EditActivityForm activity={act} />
+          </div>
+        </>
+      )
+    }
+  }
+
   return (
     <>
       <div className="sheet-scrim open" onClick={closeSheets} />
@@ -89,8 +110,8 @@ function EntrySheetInner() {
         <div className="sheet-handle" />
 
         {/* v11: LLM recommendations on what to record or write about
-            (hidden on the Focus tab — the timer needs the room) */}
-        {entryTab !== 'focus' && (
+            (hidden on the Focus/Reflect tabs — they need the room) */}
+        {entryTab !== 'focus' && entryTab !== 'reflect' && (
         <div className="rec-section">
           <span className="rec-head"><I name="spark" /> worth writing down</span>
           {recsBusy && recs === null ? (
@@ -128,6 +149,7 @@ function EntrySheetInner() {
         {entryTab === 'manual' && <ManualTab prefillLabel={prefill.label} prefillGoal={prefill.goalId} />}
         {entryTab === 'timer' && <TimerTab />}
         {entryTab === 'focus' && <FocusTimer onLogged={closeSheets} />}
+        {entryTab === 'reflect' && <ReflectTab />}
       </div>
     </>
   )
@@ -184,10 +206,17 @@ function RecordTab({ prefillText }: { prefillText?: string }) {
     setStatus('busy')
     try {
       const raw = await LLM.structureDay(text, ledger)
-      const v = validateDelta(ledger, raw)
+      /* P2-9: the rule-based parser runs even when the LLM is up — it
+       * catches the top relative-date phrases and the two are merged
+       * (LLM wins on a conflicting day+label). Works offline-LLM too. */
+      const ruleDates = parseDateWords(text, todayStr())
+      const llmDates = Array.isArray(raw.dates) ? (raw.dates as Record<string, unknown>[]) : []
+      const seen = new Set(llmDates.map((d) => `${String(d.date)}::${String(d.label).toLowerCase()}`))
+      const merged = [...llmDates, ...ruleDates.filter((r) => !seen.has(`${r.date}::${r.label.toLowerCase()}`)).map((r) => ({ ...r }))]
+      const v = validateDelta(ledger, { ...raw, dates: merged })
       setStatus('')
       const empty = !v.delta.activities.length && !v.delta.habits.length && !v.delta.newNotes.length
-        && !v.delta.highlight && !v.delta.checkIn && !v.delta.metrics.length
+        && !v.delta.highlight && !v.delta.checkIn && !v.delta.metrics.length && !v.delta.dates.length
       if (empty && !v.skipped.length) {
         setStatus('Nothing recognizable in that — try mentioning what you did and when.')
         return
@@ -289,10 +318,14 @@ function PasteTab() {
     setNlStatus('busy')
     try {
       const raw = await LLM.structureDay(nl, ledger)
-      const v = validateDelta(ledger, raw)
+      const ruleDates = parseDateWords(nl, todayStr()) // P2-9: offline-LLM floor
+      const llmDates = Array.isArray(raw.dates) ? (raw.dates as Record<string, unknown>[]) : []
+      const seen = new Set(llmDates.map((d) => `${String(d.date)}::${String(d.label).toLowerCase()}`))
+      const merged = [...llmDates, ...ruleDates.filter((r) => !seen.has(`${r.date}::${r.label.toLowerCase()}`)).map((r) => ({ ...r }))]
+      const v = validateDelta(ledger, { ...raw, dates: merged })
       setNlStatus('')
       const empty = !v.delta.activities.length && !v.delta.habits.length && !v.delta.newNotes.length
-        && !v.delta.highlight && !v.delta.checkIn && !v.delta.metrics.length
+        && !v.delta.highlight && !v.delta.checkIn && !v.delta.metrics.length && !v.delta.dates.length
       if (empty && !v.skipped.length) {
         setNlStatus('Nothing recognizable in that.')
         return
@@ -525,6 +558,223 @@ function TimerTab() {
         <RoughBtn onClick={stopSave} disabled={sec === 0}>Stop &amp; save</RoughBtn>
       </div>
       <p className="field-hint" style={{ marginTop: 10 }}>The real clock start/stop is recorded, so the timeline places it correctly.</p>
+    </div>
+  )
+}
+
+/* ================= Edit (P2-3) ================= */
+
+/** Correct the record — same fields as Manual, prefilled from the activity,
+ * with a confirm-stepped Delete. All validation rules match the pipeline. */
+function EditActivityForm({ activity }: { activity: { id: string; goalId: string | null; hours: number; start: string | null; end: string | null; label: string | null } }) {
+  const ledger = useLedger((s) => s.ledger)!
+  const patchActivity = useLedger((s) => s.patchActivity)
+  const removeActivity = useLedger((s) => s.removeActivity)
+  const closeSheets = useLedger((s) => s.closeSheets)
+  const showToast = useLedger((s) => s.showToast)
+  const [label, setLabel] = useState(activity.label ?? '')
+  const [goalId, setGoalId] = useState(activity.goalId ?? '')
+  const [from, setFrom] = useState(activity.start ?? '')
+  const [to, setTo] = useState(activity.end ?? '')
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  async function submit(e?: React.FormEvent) {
+    e?.preventDefault()
+    if (!label.trim()) { showToast('Give it a label.'); return }
+    if (!from || !to) { showToast('Need both from and to times.'); return }
+    const mins = toMin(to) - toMin(from)
+    if (mins <= 0) { showToast('The end has to be after the start.'); return }
+    const hours = +(mins / 60).toFixed(2)
+    const ok = await patchActivity(activity.id, {
+      hours, start: from, end: to, label: label.trim(),
+      goalId: goalId || null,
+    })
+    if (ok) {
+      showToast('Entry corrected ✓')
+      closeSheets()
+    }
+  }
+
+  return (
+    <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div className="rec-head" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <I name="pencil" /> correct the record
+      </div>
+      <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--ink-soft)', display: 'flex', flexDirection: 'column', gap: 5 }}>
+        What did you do?
+        <input type="text" value={label} onChange={(e) => setLabel(e.target.value)} />
+      </label>
+      <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--ink-soft)', display: 'flex', flexDirection: 'column', gap: 5 }}>
+        Goal
+        <select value={goalId} onChange={(e) => setGoalId(e.target.value)}>
+          <option value="">No goal — free entry</option>
+          {ledger.goals.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+        </select>
+      </label>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <label style={{ flex: 1, minWidth: 90, fontSize: '0.78rem', fontWeight: 600, color: 'var(--ink-soft)', display: 'flex', flexDirection: 'column', gap: 5 }}>
+          From
+          <input type="time" value={from} onChange={(e) => setFrom(e.target.value)} />
+        </label>
+        <label style={{ flex: 1, minWidth: 90, fontSize: '0.78rem', fontWeight: 600, color: 'var(--ink-soft)', display: 'flex', flexDirection: 'column', gap: 5 }}>
+          To
+          <input type="time" value={to} onChange={(e) => setTo(e.target.value)} />
+        </label>
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <RoughBtn variant="primary" type="submit" className="btn-sm">Save correction</RoughBtn>
+        <RoughBtn className="btn-sm" onClick={closeSheets}>Cancel</RoughBtn>
+        {confirmDelete ? (
+          <span className="habit-confirm">
+            Delete this entry?
+            <button className="icon-btn" type="button" title="Confirm delete" onClick={() => { removeActivity(activity.id); closeSheets(); showToast('Entry deleted') }}>
+              <I name="check" />
+            </button>
+            <button className="icon-btn" type="button" title="Keep it" onClick={() => setConfirmDelete(false)}>
+              <I name="x" />
+            </button>
+          </span>
+        ) : (
+          <button className="icon-btn" type="button" title="Delete entry" onClick={() => setConfirmDelete(true)}>
+            <I name="trash" />
+          </button>
+        )}
+      </div>
+      <p className="field-hint" style={{ margin: 0 }}>Every aggregate re-derives from the corrected entry — month totals, goal pace, the works.</p>
+    </form>
+  )
+}
+
+/* ================= Reflect (P2-4) ================= */
+
+/** Close the day: question chip → answer → highlight → plan tomorrow.
+ * Check-in/highlight edits reuse the merge contract (replace semantics), so
+ * "edit last night's answer" is this same UI. */
+function ReflectTab() {
+  const ledger = useLedger((s) => s.ledger)!
+  const mergeDeltas = useLedger((s) => s.mergeDeltas)
+  const saveDayPlan = useLedger((s) => s.saveDayPlan)
+  const logGoalHours = useLedger((s) => s.logGoalHours)
+  const showToast = useLedger((s) => s.showToast)
+  const closeSheets = useLedger((s) => s.closeSheets)
+  const reflectPrefill = useLedger((s) => s.reflectPrefill)
+
+  const t = todayStr()
+  const tomorrow = new Date(new Date(t + 'T00:00:00Z').getTime() + 86400000).toISOString().slice(0, 10)
+  const todayDay = ledger.days.find((d) => d.date === t)
+  const tomorrowPlan = ledger.days.find((d) => d.date === tomorrow)?.plan ?? []
+
+  const [question, setQuestion] = useState(reflectPrefill || todayDay?.checkIn?.question || '')
+  const [answer, setAnswer] = useState(todayDay?.checkIn?.answer || '')
+  const [highlight, setHighlight] = useState(todayDay?.highlight || '')
+  const [saving, setSaving] = useState(false)
+  const [planRows, setPlanRows] = useState<DayPlanEntry[]>(() =>
+    tomorrowPlan.length ? [...tomorrowPlan] : [],
+  )
+
+  /* pre-fill three plan rows from today's most-logged goals */
+  function seedPlan() {
+    const byGoal = new Map<string, number>()
+    ;(todayDay?.activities ?? []).forEach((a) => {
+      if (a.goalId) byGoal.set(a.goalId, (byGoal.get(a.goalId) ?? 0) + a.hours)
+    })
+    const top = Array.from(byGoal.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3)
+    setPlanRows(top.map(([goalId, h]) => ({ goalId, hours: Math.max(0.5, Math.round(h * 2) / 2) })))
+  }
+
+  async function submitReflect() {
+    if (!answer.trim()) { showToast('Write an answer first — even one line.'); return }
+    setSaving(true)
+    const delta: Record<string, unknown> = {
+      date: t,
+      checkIn: { question: question.trim() || 'What mattered today?', answer: answer.trim() },
+    }
+    if (highlight.trim()) delta.highlight = highlight.trim()
+    const r = await mergeDeltas([delta])
+    setSaving(false)
+    if ('error' in r) { showToast(r.error); return }
+    showToast('Day closed ✓ — see you tomorrow morning')
+  }
+
+  async function submitPlan() {
+    const rows = planRows.filter((p) => p.hours > 0 && p.hours <= 24)
+    const ok = await saveDayPlan(tomorrow, rows.length ? rows : null)
+    if (ok) {
+      showToast(rows.length ? `Planned ${rows.length} intent${rows.length > 1 ? 's' : ''} for tomorrow ✓` : "Tomorrow's plan cleared ✓")
+      closeSheets()
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div>
+        <div className="rec-head"><I name="compass" /> close the day</div>
+        <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--ink-soft)', display: 'flex', flexDirection: 'column', gap: 5, marginTop: 8 }}>
+          Question
+          <input type="text" value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="What mattered today?" />
+        </label>
+        <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--ink-soft)', display: 'flex', flexDirection: 'column', gap: 5, marginTop: 8 }}>
+          Answer
+          <textarea className="textarea" value={answer} onChange={(e) => setAnswer(e.target.value)} style={{ minHeight: 70 }} placeholder="One honest line beats a page of boilerplate." />
+        </label>
+        <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--ink-soft)', display: 'flex', flexDirection: 'column', gap: 5, marginTop: 8 }}>
+          Highlight
+          <input type="text" value={highlight} onChange={(e) => setHighlight(e.target.value)} placeholder="One short line about what mattered." />
+        </label>
+        <div style={{ marginTop: 10 }}>
+          <RoughBtn variant="primary" className="btn-sm" onClick={submitReflect} disabled={saving}>
+            {saving ? 'Saving…' : 'Save check-in'}
+          </RoughBtn>
+        </div>
+      </div>
+
+      <div style={{ borderTop: '1.5px dashed var(--rule)', paddingTop: 12 }}>
+        <div className="rec-head" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span><I name="calendar" /> plan tomorrow</span>
+          {planRows.length === 0 && (
+            <RoughBtn className="btn-sm" onClick={seedPlan}>seed from today</RoughBtn>
+          )}
+        </div>
+        {tomorrowPlan.length > 0 && planRows.length === 0 && (
+          <p className="note" style={{ fontSize: '.78rem' }}>
+            Tomorrow already has {tomorrowPlan.length} intent{tomorrowPlan.length > 1 ? 's' : ''} planned. Editing here replaces it.
+          </p>
+        )}
+        {planRows.map((row, i) => (
+          <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8 }}>
+            <select
+              value={row.goalId ?? ''}
+              onChange={(e) => setPlanRows((rows) => rows.map((r, k) => (k === i ? { ...r, goalId: e.target.value || null } : r)))}
+              style={{ flex: 2 }}
+              aria-label="Goal"
+            >
+              <option value="">No goal</option>
+              {ledger.goals.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+            <input
+              type="number"
+              min={0.25}
+              step={0.25}
+              value={row.hours}
+              onChange={(e) => setPlanRows((rows) => rows.map((r, k) => (k === i ? { ...r, hours: Number(e.target.value) || 0.5 } : r)))}
+              style={{ width: 72 }}
+              aria-label="Hours"
+            />
+            <button className="icon-btn" title="Remove intent" onClick={() => setPlanRows((rows) => rows.filter((_, k) => k !== i))}>
+              <I name="x" />
+            </button>
+          </div>
+        ))}
+        <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+          <RoughBtn className="btn-sm" onClick={() => setPlanRows((rows) => [...rows, { goalId: ledger.goals[0]?.id ?? null, hours: 1 }])}>
+            <I name="plus" /> intent
+          </RoughBtn>
+          <RoughBtn variant="primary" className="btn-sm" onClick={submitPlan}>Save plan</RoughBtn>
+        </div>
+        <p className="field-hint" style={{ margin: '8px 0 0' }}>
+          Tomorrow morning Today shows this back — each intent logs with one tap. Planning is a suggestion, never an auto-write.
+        </p>
+      </div>
     </div>
   )
 }

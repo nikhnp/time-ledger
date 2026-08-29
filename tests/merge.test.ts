@@ -111,4 +111,73 @@ d('merge transactions (P1-4)', () => {
     expect(res.counts.activities).toBe(0)
     expect(res.skipped).toHaveLength(2)
   })
+  /* ---------- P2-9: dates[] land on their day ---------- */
+
+  it('a merge with dates[] creates importantDates and counts them', async () => {
+    const user = await seedUserWithGoal()
+    const res = await applyMergeDelta(user.id, {
+      date: '2026-08-28',
+      dates: [
+        { label: 'Quarterly report deadline', date: '2026-09-05', type: 'deadline' },
+        { label: "Mom's birthday", date: '2026-09-10', type: 'birthday' },
+      ],
+    } as MergeDelta)
+    expect(res.counts.dates).toBe(2)
+    const rows = await db.importantDate.findMany({ where: { userId: user.id }, orderBy: { date: 'asc' } })
+    expect(rows).toHaveLength(2)
+    expect(rows[0].label).toBe('Quarterly report deadline')
+    expect(rows[0].type).toBe('deadline')
+  })
+
+  it('invalid dates[] entries are skipped with reasons', async () => {
+    const user = await seedUserWithGoal()
+    const res = await applyMergeDelta(user.id, {
+      date: '2026-08-28',
+      dates: [
+        { label: '', date: '2026-09-05', type: 'deadline' },
+        { label: 'bad date', date: '2026-02-30', type: 'event' },
+      ],
+    } as MergeDelta)
+    expect(res.counts.dates ?? 0).toBe(0)
+    expect(res.skipped).toHaveLength(2)
+  })
+
+  /* ---------- P2-10: clientId idempotency ---------- */
+
+  it('a replayed capture with the same clientId does not double-write', async () => {
+    const user = await seedUserWithGoal()
+    const delta = {
+      date: '2026-08-28',
+      activities: [{ goalId: 'deep-work', hours: 1.5, label: 'replay me', clientId: 'act_fixed_1' }],
+      newNotes: [{ text: 'replayed note', clientId: 'note_fixed_1' }],
+    } as MergeDelta
+    const first = await applyMergeDelta(user.id, delta)
+    expect(first.counts.activities).toBe(1)
+
+    const replay = await applyMergeDelta(user.id, { ...delta, date: '2026-08-28' })
+    expect(replay.counts.activities).toBe(1) // reported, but…
+
+    const acts = await db.activity.findMany({ where: { userId: user.id, label: 'replay me' } })
+    expect(acts).toHaveLength(1) // …only one row exists
+    const notes = await db.note.findMany({ where: { userId: user.id, text: 'replayed note' } })
+    expect(notes).toHaveLength(1)
+  })
+
+  /* ---------- P2-4: Day.plan ---------- */
+
+  it('upsertDay persists and clears the plan', async () => {
+    const user = await seedUserWithGoal()
+    const { upsertDay, findDayByUserAndDate } = await import('@/lib/neon-sql')
+    const d = new Date('2026-08-30T00:00:00Z')
+    await upsertDay(user.id, d, { plan: [{ goalId: 'deep-work', hours: 2, note: 'morning' }] })
+    const row = await findDayByUserAndDate(user.id, d)
+    expect(row?.plan).toBeTruthy()
+    const plan = JSON.parse(row!.plan as string) as Array<{ goalId: string; hours: number }>
+    expect(plan[0].goalId).toBe('deep-work')
+    expect(plan[0].hours).toBe(2)
+
+    await upsertDay(user.id, d, { plan: null })
+    const cleared = await findDayByUserAndDate(user.id, d)
+    expect(cleared?.plan).toBeNull()
+  })
 })

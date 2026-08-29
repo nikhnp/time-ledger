@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
-import { findHabitByUserAndId, findDayHabit, upsertDayHabit, assembleLedgerRaw } from '@/lib/neon-sql'
-import { assembleLedger, validDateStr } from '@/lib/server/ledger'
+import { findHabitByUserAndId, findDayHabit, upsertDayHabit, maxChangeId, respondMutation } from '@/lib/neon-sql'
+import { validDateStr } from '@/lib/server/ledger'
 import { todayIn } from '@/lib/dates'
 
 export const dynamic = 'force-dynamic'
@@ -26,6 +26,7 @@ export async function POST(req: NextRequest) {
   const existing = await findDayHabit(user.id, date, habitId)
   const done = typeof body.done === 'boolean' ? body.done : !(existing?.done ?? false)
 
+  const sinceId = await maxChangeId()
   await upsertDayHabit(user.id, date, habitId, done)
-  return Response.json({ ledger: await assembleLedger(user.id), done })
+  return respondMutation(user.id, sinceId, { done })
 }

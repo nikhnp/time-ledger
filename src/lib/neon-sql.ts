@@ -1,6 +1,6 @@
 import { db } from '@/lib/db'
-import { d2s, todayStr } from '@/lib/dates'
-import type { Ledger, DayT } from '@/lib/types'
+import { d2s, s2d, todayStr } from '@/lib/dates'
+import type { Ledger, DayT, LedgerPatch, LedgerDeleted } from '@/lib/types'
 import type { Prisma } from '@prisma/client'
 
 /**
@@ -58,6 +58,7 @@ export interface GoalRow {
   weeklyTargetHours: number
   color: string | null
   sortOrder: number
+  kind: string // P2-2: 'goal' | 'hobby'
   milestones: unknown
   createdAt: Date
 }
@@ -111,6 +112,7 @@ export interface DayRow {
   date: Date
   highlight: string | null
   checkIn: unknown
+  plan: unknown // P2-4: JSON [{goalId, hours, note}]
 }
 
 export interface ActivityRow {
@@ -123,6 +125,8 @@ export interface ActivityRow {
   end: string | null
   label: string | null
   createdAt: Date
+  updatedAt: Date | null // P2-3
+  clientId: string | null // P2-10
 }
 
 export interface DayHabitRow {
@@ -343,6 +347,7 @@ function toGoalRow(g: GoalRecord): GoalRow {
     weeklyTargetHours: g.weeklyTargetHours,
     color: g.color,
     sortOrder: g.sortOrder,
+    kind: g.kind === 'hobby' ? 'hobby' : 'goal',
     milestones: parseJson<unknown>(g.milestones, []),
     createdAt: g.createdAt,
   }
@@ -394,6 +399,7 @@ export async function updateGoal(
     weeklyTargetHours?: number
     color?: string | null
     deadline?: Date | null
+    kind?: 'goal' | 'hobby' // P2-2
     milestones?: unknown
   },
 ): Promise<void> {
@@ -403,14 +409,19 @@ export async function updateGoal(
   if (patch.weeklyTargetHours !== undefined) data.weeklyTargetHours = patch.weeklyTargetHours
   if (patch.color !== undefined) data.color = patch.color
   if (patch.deadline !== undefined) data.deadline = patch.deadline
+  if (patch.kind !== undefined) data.kind = patch.kind
   if (patch.milestones !== undefined) data.milestones = JSON.stringify(patch.milestones)
   if (Object.keys(data).length === 0) return
   await db.goal.update({ where: { userId_id: { userId, id } }, data })
+  await logChanges(db, userId, [{ entity: 'goal', entityId: id }])
 }
 
-/** v10.5: delete a goal — its tasks cascade via FK onDelete: Cascade. */
-export async function deleteGoal(userId: string, id: string): Promise<void> {
-  await db.goal.delete({ where: { userId_id: { userId, id } } })
+/** v10.5: delete a goal — its tasks cascade via FK onDelete: Cascade. The
+ * caller logs the cascade (DB-level deletes can't self-report); routes
+ * wrap goal + task deletes in one transaction and log each task. */
+export async function deleteGoal(userId: string, id: string, c: Client = db): Promise<void> {
+  await c.goal.delete({ where: { userId_id: { userId, id } } })
+  await logChanges(c, userId, [{ entity: 'goal', entityId: id, op: 'delete' }])
 }
 
 /** v10.5: patch a habit (rename, retarget, archive/unarchive). */
@@ -433,12 +444,19 @@ export async function updateHabit(
   if (patch.sortOrder !== undefined) data.sortOrder = patch.sortOrder
   if (Object.keys(data).length === 0) return
   await db.habit.update({ where: { userId_id: { userId, id } }, data })
+  await logChanges(db, userId, [{ entity: 'habit', entityId: id }])
 }
 
-/** v10.5: delete a habit and its per-day check rows. */
-export async function deleteHabit(userId: string, id: string): Promise<void> {
-  await db.dayHabit.deleteMany({ where: { userId, habitId: id } })
-  await db.habit.delete({ where: { userId_id: { userId, id } } })
+/** v10.5: delete a habit and its per-day check rows. The affected days are
+ * logged too so delta clients re-fold them without the habit's checks. */
+export async function deleteHabit(userId: string, id: string, c: Client = db): Promise<void> {
+  const affected = await c.dayHabit.findMany({ where: { userId, habitId: id }, select: { date: true } })
+  await c.dayHabit.deleteMany({ where: { userId, habitId: id } })
+  await c.habit.delete({ where: { userId_id: { userId, id } } })
+  await logChanges(c, userId, [
+    ...affected.map((a) => ({ entity: 'dayHabit' as const, entityId: id, entityDate: d2s(a.date), op: 'delete' as const })),
+    { entity: 'habit', entityId: id, op: 'delete' },
+  ])
 }
 
 /** v11: create a goal row for a user (id is a human-friendly slug). */
@@ -451,6 +469,7 @@ export async function createGoal(params: {
   weeklyTargetHours?: number
   color?: string | null
   sortOrder?: number
+  kind?: 'goal' | 'hobby' // P2-2
 }): Promise<GoalRow> {
   const g = await db.goal.create({
     data: {
@@ -462,9 +481,11 @@ export async function createGoal(params: {
       weeklyTargetHours: params.weeklyTargetHours ?? 8,
       color: params.color ?? null,
       sortOrder: params.sortOrder ?? 0,
+      kind: params.kind === 'hobby' ? 'hobby' : 'goal',
       milestones: '[]',
     },
   })
+  await logChanges(db, params.userId, [{ entity: 'goal', entityId: params.id }])
   return toGoalRow(g)
 }
 
@@ -477,7 +498,7 @@ export async function createHabit(params: {
   color?: string | null
   sortOrder?: number
 }): Promise<HabitRow> {
-  return db.habit.create({
+  const created = await db.habit.create({
     data: {
       userId: params.userId,
       id: params.id,
@@ -487,6 +508,8 @@ export async function createHabit(params: {
       sortOrder: params.sortOrder ?? 0,
     },
   })
+  await logChanges(db, params.userId, [{ entity: 'habit', entityId: params.id }])
+  return created
 }
 
 /* ============================================================
@@ -525,6 +548,7 @@ export async function createTask(params: {
       lastTouched: params.lastTouched,
     },
   })
+  await logChanges(db, params.userId, [{ entity: 'task', entityId: params.id }])
 }
 
 export async function updateTask(
@@ -548,11 +572,15 @@ export async function updateTask(
   if (patch.goalId !== undefined) data.goalId = patch.goalId
   if (patch.lastTouched !== undefined) data.lastTouched = patch.lastTouched
   if (Object.keys(data).length === 0) return
-  await db.task.update({ where: { id }, data })
+  const updated = await db.task.update({ where: { id }, data })
+  await logChanges(db, updated.userId, [{ entity: 'task', entityId: updated.id }])
 }
 
 export async function deleteTask(id: string): Promise<void> {
+  const existing = await db.task.findFirst({ where: { id } })
+  if (!existing) return
   await db.task.deleteMany({ where: { id } })
+  await logChanges(db, existing.userId, [{ entity: 'task', entityId: id, op: 'delete' }])
 }
 
 /* ============================================================
@@ -604,6 +632,7 @@ export async function upsertDayHabit(
     create: { userId, date, habitId, done },
     update: { done },
   })
+  await logChanges(c, userId, [{ entity: 'dayHabit', entityId: habitId, entityDate: d2s(date) }])
 }
 
 /* ============================================================
@@ -613,15 +642,21 @@ export async function upsertDayHabit(
 export async function upsertDay(
   userId: string,
   date: Date,
-  patch: { highlight?: string | null; checkIn?: object | null },
+  patch: { highlight?: string | null; checkIn?: object | null; plan?: object | null },
   c: Client = db,
 ): Promise<void> {
   const data: Record<string, unknown> = {}
-  if (patch.highlight) data.highlight = patch.highlight
-  if (patch.checkIn) data.checkIn = JSON.stringify(patch.checkIn)
+  // P2-3: the day editor sends explicit nulls to CLEAR a field; the merge
+  // path (applyMergeDelta) only ever sends truthy values, unchanged.
+  if (patch.highlight !== undefined && patch.highlight) data.highlight = patch.highlight
+  else if (patch.highlight === null) data.highlight = null
+  if (patch.checkIn !== undefined && patch.checkIn) data.checkIn = JSON.stringify(patch.checkIn)
+  else if (patch.checkIn === null) data.checkIn = null
+  if (patch.plan !== undefined) data.plan = patch.plan ? JSON.stringify(patch.plan) : null
   if (Object.keys(data).length === 0) {
     // ensure the day exists even with no content
     await c.day.upsert({ where: { userId_date: { userId, date } }, create: { userId, date }, update: {} })
+    await logChanges(c, userId, [{ entity: 'day', entityId: d2s(date), entityDate: d2s(date) }])
     return
   }
   await c.day.upsert({
@@ -629,6 +664,12 @@ export async function upsertDay(
     create: { userId, date, ...data },
     update: data,
   })
+  await logChanges(c, userId, [{ entity: 'day', entityId: d2s(date), entityDate: d2s(date) }])
+}
+
+/** P2-3/P2-4: the day editor (highlight / checkIn / plan) fetches one day. */
+export async function findDayByUserAndDate(userId: string, date: Date): Promise<DayRow | null> {
+  return db.day.findUnique({ where: { userId_date: { userId, date } } })
 }
 
 /* ============================================================
@@ -647,6 +688,7 @@ export async function upsertDayMetric(
     create: { userId, date, metricId, value },
     update: { value },
   })
+  await logChanges(c, userId, [{ entity: 'dayMetric', entityId: metricId, entityDate: d2s(date) }])
 }
 
 /* ============================================================
@@ -663,10 +705,61 @@ export async function createActivity(
     start: string | null
     end: string | null
     label: string | null
+    clientId?: string | null // P2-10: idempotency key
   },
   c: Client = db,
 ): Promise<void> {
-  await c.activity.create({ data: params })
+  await c.activity.create({ data: { ...params, clientId: params.clientId ?? null } })
+  await logChanges(c, params.userId, [{ entity: 'activity', entityId: params.id, entityDate: d2s(params.date) }])
+}
+
+/** P2-3: activities had no by-user-and-id finder before (notes/inbox did). */
+export async function findActivityByUserAndId(userId: string, id: string): Promise<ActivityRow | null> {
+  const a = await db.activity.findFirst({ where: { id, userId } })
+  return a ?? null
+}
+
+/** P2-3: correct the record — edit an activity's hours/times/label/goal/day.
+ * The affected days (old + new) are re-folded for delta clients. */
+export async function updateActivity(
+  userId: string,
+  id: string,
+  patch: {
+    date?: Date
+    goalId?: string | null
+    hours?: number
+    start?: string | null
+    end?: string | null
+    label?: string | null
+  },
+): Promise<void> {
+  const existing = await db.activity.findFirst({ where: { id, userId } })
+  if (!existing) return
+  const data: Record<string, unknown> = { updatedAt: new Date() }
+  if (patch.date !== undefined) data.date = patch.date
+  if (patch.goalId !== undefined) data.goalId = patch.goalId
+  if (patch.hours !== undefined) data.hours = patch.hours
+  if (patch.start !== undefined) data.start = patch.start
+  if (patch.end !== undefined) data.end = patch.end
+  if (patch.label !== undefined) data.label = patch.label
+  await db.activity.update({ where: { id }, data })
+  const newDate = (data.date as Date) ?? existing.date
+  const dates = Array.from(new Set([d2s(existing.date), d2s(newDate)]))
+  await logChanges(db, userId, dates.map((entityDate) => ({ entity: 'activity' as const, entityId: id, entityDate })))
+}
+
+/** P2-3: hard delete with confirm upstream — the admin backup covers regret. */
+export async function deleteActivity(userId: string, id: string): Promise<void> {
+  const existing = await db.activity.findFirst({ where: { id, userId } })
+  if (!existing) return
+  await db.activity.deleteMany({ where: { id, userId } })
+  await logChanges(db, userId, [{ entity: 'activity', entityId: id, entityDate: d2s(existing.date), op: 'delete' }])
+}
+
+/** P2-10: replayed offline capture — same (userId, clientId) means this
+ * activity is already in the book; the merge pipeline skips the append. */
+export async function findActivityByUserAndClientId(userId: string, clientId: string): Promise<ActivityRow | null> {
+  return db.activity.findFirst({ where: { userId, clientId } })
 }
 
 export async function findActivitiesByUserAndDateRange(
@@ -697,10 +790,12 @@ export async function createNote(
     userId: string
     date: Date
     text: string
+    clientId?: string | null // P2-10: idempotency key
   },
   c: Client = db,
 ): Promise<void> {
-  await c.note.create({ data: params })
+  await c.note.create({ data: { ...params, clientId: params.clientId ?? null } })
+  await logChanges(c, params.userId, [{ entity: 'note', entityId: params.id }])
 }
 
 export async function findNoteByUserAndId(
@@ -710,8 +805,27 @@ export async function findNoteByUserAndId(
   return db.note.findFirst({ where: { id, userId } })
 }
 
+/** P2-3: note editing — the append-only doctrine was already soft at the edges. */
+export async function updateNote(userId: string, id: string, patch: { text?: string; date?: Date }): Promise<void> {
+  const data: Record<string, unknown> = {}
+  if (patch.text !== undefined) data.text = patch.text
+  if (patch.date !== undefined) data.date = patch.date
+  if (Object.keys(data).length === 0) return
+  await db.note.updateMany({ where: { id, userId }, data })
+  await logChanges(db, userId, [{ entity: 'note', entityId: id }])
+}
+
+/** P2-10: replayed offline capture — same (userId, clientId) returns the
+ * existing note instead of appending a duplicate. */
+export async function findNoteByUserAndClientId(userId: string, clientId: string): Promise<NoteRow | null> {
+  return db.note.findFirst({ where: { userId, clientId } })
+}
+
 export async function deleteNote(id: string): Promise<void> {
+  const existing = await db.note.findFirst({ where: { id } })
+  if (!existing) return
   await db.note.deleteMany({ where: { id } })
+  await logChanges(db, existing.userId, [{ entity: 'note', entityId: id, op: 'delete' }])
 }
 
 /* ============================================================
@@ -726,6 +840,7 @@ export async function createInboxItem(params: {
   await db.inboxItem.create({
     data: { id: params.id, userId: params.userId, text: params.text, done: false },
   })
+  await logChanges(db, params.userId, [{ entity: 'inbox', entityId: params.id }])
 }
 
 export async function findInboxItemByUserAndId(
@@ -736,11 +851,19 @@ export async function findInboxItemByUserAndId(
 }
 
 export async function markInboxItemDone(id: string): Promise<void> {
+  const existing = await db.inboxItem.findFirst({ where: { id } })
+  if (!existing) return
   await db.inboxItem.updateMany({ where: { id }, data: { done: true } })
+  // done items leave ledger.inbox (the assembly filters done:false), so this
+  // is a DELETE from the client's point of view
+  await logChanges(db, existing.userId, [{ entity: 'inbox', entityId: id, op: 'delete' }])
 }
 
 export async function deleteInboxItem(id: string): Promise<void> {
+  const existing = await db.inboxItem.findFirst({ where: { id } })
+  if (!existing) return
   await db.inboxItem.deleteMany({ where: { id } })
+  await logChanges(db, existing.userId, [{ entity: 'inbox', entityId: id, op: 'delete' }])
 }
 
 /* ============================================================
@@ -757,6 +880,85 @@ export async function createImportantDate(params: {
   await db.importantDate.create({
     data: { ...params, repeatsAnnually: false },
   })
+  await logChanges(db, params.userId, [{ entity: 'importantDate', entityId: params.id }])
+}
+
+/** P2-3/P2-9: important dates were create-only — wrong-date edits route here. */
+export async function findImportantDateByUserAndId(userId: string, id: string): Promise<ImportantDateRow | null> {
+  const d = await db.importantDate.findFirst({ where: { id, userId } })
+  return d ?? null
+}
+
+export async function updateImportantDate(
+  userId: string,
+  id: string,
+  patch: { label?: string; date?: Date; type?: string },
+): Promise<void> {
+  const data: Record<string, unknown> = {}
+  if (patch.label !== undefined) data.label = patch.label
+  if (patch.date !== undefined) data.date = patch.date
+  if (patch.type !== undefined) data.type = patch.type
+  if (Object.keys(data).length === 0) return
+  await db.importantDate.updateMany({ where: { id, userId }, data })
+  await logChanges(db, userId, [{ entity: 'importantDate', entityId: id }])
+}
+
+export async function deleteImportantDate(userId: string, id: string): Promise<void> {
+  const existing = await db.importantDate.findFirst({ where: { id, userId } })
+  if (!existing) return
+  await db.importantDate.deleteMany({ where: { id, userId } })
+  await logChanges(db, userId, [{ entity: 'importantDate', entityId: id, op: 'delete' }])
+}
+
+/* ============================================================
+ * ROW → LEDGER-ITEM MAPPERS
+ * Shared between the full assembly and the P2-1 patch builder so the two
+ * can never drift apart.
+ * ============================================================ */
+
+function toGoalT(g: GoalRow): Ledger['goals'][number] {
+  return {
+    id: g.id, name: g.name, unit: g.unit, target: g.target,
+    deadline: g.deadline ? d2s(g.deadline) : null,
+    weeklyTargetHours: g.weeklyTargetHours, color: g.color,
+    kind: g.kind === 'hobby' ? 'hobby' : 'goal',
+    milestones: Array.isArray(g.milestones) ? (g.milestones as Ledger['goals'][number]['milestones']) : [],
+  }
+}
+
+function toTaskT(t: TaskRow): Ledger['tasks'][number] {
+  return {
+    id: t.id, goalId: t.goalId, label: t.label,
+    status: t.status as 'todo' | 'doing' | 'done',
+    priority: t.priority as 'normal' | 'high',
+    urgent: t.urgent, important: t.important, lastTouched: d2s(t.lastTouched),
+  }
+}
+
+function toMetricT(m: MetricRow): Ledger['metrics'][number] {
+  return {
+    id: m.id, name: m.name, direction: m.direction as 'up' | 'down', unit: m.unit,
+    dailyTarget: m.dailyTarget, monthlyTarget: m.monthlyTarget,
+  }
+}
+
+function toHabitT(h: HabitRow): Ledger['habits'][number] {
+  return {
+    id: h.id, name: h.name, targetPerWeek: h.targetPerWeek, color: h.color,
+    archived: h.archived,
+  }
+}
+
+function toImportantDateT(d: ImportantDateRow): Ledger['importantDates'][number] {
+  return { id: d.id, label: d.label, date: d2s(d.date), type: d.type, repeatsAnnually: d.repeatsAnnually }
+}
+
+function toNoteT(n: NoteRow): Ledger['notes'][number] {
+  return { id: n.id, date: d2s(n.date), text: n.text }
+}
+
+function toInboxT(i: InboxItemRow): Ledger['inbox'][number] {
+  return { id: i.id, text: i.text, addedAt: d2s(i.addedAt) }
 }
 
 /* ============================================================
@@ -787,7 +989,7 @@ export async function assembleLedgerRaw(userId: string): Promise<Ledger> {
     const key = d2s(date)
     let d = byDate.get(key)
     if (!d) {
-      d = { date: key, highlight: null, checkIn: null, activities: [], habits: {}, metrics: {} }
+      d = { date: key, highlight: null, checkIn: null, plan: null, activities: [], habits: {}, metrics: {} }
       byDate.set(key, d)
     }
     return d
@@ -796,6 +998,8 @@ export async function assembleLedgerRaw(userId: string): Promise<Ledger> {
   days.forEach((d) => {
     dayFor(d.date).highlight = d.highlight
     dayFor(d.date).checkIn = parseJson<DayT['checkIn']>(d.checkIn, null)
+    // P2-4: the plan rides along on the folded day (next-morning banner)
+    dayFor(d.date).plan = parseJson<DayT['plan']>(d.plan, null)
   })
   activities.forEach((a) => {
     dayFor(a.date).activities.push({
@@ -814,33 +1018,254 @@ export async function assembleLedgerRaw(userId: string): Promise<Ledger> {
 
   return {
     meta: { startDate, updated: todayStr() },
-    goals: goals.map((g) => ({
-      id: g.id, name: g.name, unit: g.unit, target: g.target,
-      deadline: g.deadline ? d2s(g.deadline) : null,
-      weeklyTargetHours: g.weeklyTargetHours, color: g.color,
-      milestones: Array.isArray(g.milestones) ? (g.milestones as Ledger['goals'][number]['milestones']) : [],
-    })),
-    tasks: tasks.map((t) => ({
-      id: t.id, goalId: t.goalId, label: t.label,
-      status: t.status as 'todo' | 'doing' | 'done',
-      priority: t.priority as 'normal' | 'high',
-      urgent: t.urgent, important: t.important, lastTouched: d2s(t.lastTouched),
-    })),
-    metrics: metrics.map((m) => ({
-      id: m.id, name: m.name, direction: m.direction as 'up' | 'down', unit: m.unit,
-      dailyTarget: m.dailyTarget, monthlyTarget: m.monthlyTarget,
-    })),
-    habits: habits.map((h) => ({
-      id: h.id, name: h.name, targetPerWeek: h.targetPerWeek, color: h.color,
-      archived: h.archived,
-    })),
-    importantDates: importantDates.map((d) => ({
-      id: d.id, label: d.label, date: d2s(d.date), type: d.type, repeatsAnnually: d.repeatsAnnually,
-    })),
+    goals: goals.map(toGoalT),
+    tasks: tasks.map(toTaskT),
+    metrics: metrics.map(toMetricT),
+    habits: habits.map(toHabitT),
+    importantDates: importantDates.map(toImportantDateT),
     days: Array.from(byDate.values()).sort((a, b) => (a.date < b.date ? -1 : 1)),
-    notes: notes.map((n) => ({ id: n.id, date: d2s(n.date), text: n.text })),
-    inbox: inbox.map((i) => ({ id: i.id, text: i.text, addedAt: d2s(i.addedAt) })),
+    notes: notes.map(toNoteT),
+    inbox: inbox.map(toInboxT),
   }
+}
+
+/* ============================================================
+ * CHANGE FEED (P2-1) — per-user change log for delta sync
+ * Every mutating helper below appends to it via logChanges() (same
+ * transaction when one is open), so mutations can respond with a small
+ * per-entity patch and GET /api/ledger?since=<cursor> can return just the
+ * delta. ScreenEntry changes are NOT logged (own API/state, outside the
+ * Ledger). Restore writes rows directly → bumps User.syncWatermark instead.
+ * ============================================================ */
+
+export type ChangeEntity =
+  | 'goal' | 'task' | 'habit' | 'metric' | 'importantDate'
+  | 'day' | 'activity' | 'dayHabit' | 'dayMetric' | 'note' | 'inbox'
+
+export type ChangeOp = 'upsert' | 'delete'
+
+export interface ChangeRow {
+  id: number
+  userId: string
+  entity: string
+  entityId: string
+  entityDate: string | null
+  op: string
+}
+
+/** Append change-feed rows. Pass the transactional client when inside one. */
+export async function logChanges(
+  c: Client,
+  userId: string,
+  rows: Array<{ entity: ChangeEntity; entityId: string; entityDate?: string | null; op?: ChangeOp }>,
+): Promise<void> {
+  if (rows.length === 0) return
+  await c.changeLog.createMany({
+    data: rows.map((r) => ({
+      userId,
+      entity: r.entity,
+      entityId: r.entityId,
+      entityDate: r.entityDate ?? null,
+      op: r.op ?? 'upsert',
+    })),
+  })
+}
+
+/** Global high-water mark of the feed — the cursor clients echo back. */
+export async function maxChangeId(): Promise<number> {
+  const agg = await db.changeLog.aggregate({ _max: { id: true } })
+  return agg._max.id ?? 0
+}
+
+export async function changesSince(userId: string, since: number): Promise<ChangeRow[]> {
+  const rows = await db.changeLog.findMany({
+    where: { userId, id: { gt: since } },
+    orderBy: { id: 'asc' },
+  })
+  return rows.map((r) => ({
+    id: r.id, userId: r.userId, entity: r.entity, entityId: r.entityId,
+    entityDate: r.entityDate, op: r.op,
+  }))
+}
+
+/* Keep the newest CHANGE_KEEP rows per user; everything pruned is recorded
+ * in User.syncWatermark so a stale cursor can fall back to a full sync. */
+const CHANGE_KEEP = 500
+
+export async function pruneChangeLog(userId: string): Promise<void> {
+  const count = await db.changeLog.count({ where: { userId } })
+  if (count <= CHANGE_KEEP * 2) return
+  const cutoffRows = await db.changeLog.findMany({
+    where: { userId }, orderBy: { id: 'desc' }, skip: CHANGE_KEEP, take: 1, select: { id: true },
+  })
+  const cutoffId = cutoffRows[0]?.id
+  if (!cutoffId) return
+  const user = await db.user.findUnique({ where: { id: userId }, select: { syncWatermark: true } })
+  const watermark = Math.max(user?.syncWatermark ?? 0, cutoffId)
+  await db.$transaction([
+    db.changeLog.deleteMany({ where: { userId, id: { lte: cutoffId } } }),
+    db.user.update({ where: { id: userId }, data: { syncWatermark: watermark } }),
+  ])
+}
+
+/** Re-fold specific dates into full DayT rows (same shape as the assembly). */
+export async function assembleDayRows(userId: string, dates: string[]): Promise<DayT[]> {
+  if (dates.length === 0) return []
+  const dayDates = dates.map((s) => s2d(s))
+  const [days, activities, dayHabits, dayMetrics] = await Promise.all([
+    db.day.findMany({ where: { userId, date: { in: dayDates } } }),
+    db.activity.findMany({ where: { userId, date: { in: dayDates } }, orderBy: { createdAt: 'asc' } }),
+    db.dayHabit.findMany({ where: { userId, date: { in: dayDates } } }),
+    db.dayMetric.findMany({ where: { userId, date: { in: dayDates } } }),
+  ])
+  const out: DayT[] = []
+  for (const date of dayDates) {
+    const key = d2s(date)
+    const day = days.find((d) => d2s(d.date) === key)
+    const acts = activities.filter((a) => d2s(a.date) === key)
+    const hbs = dayHabits.filter((h) => d2s(h.date) === key)
+    const mts = dayMetrics.filter((m) => d2s(m.date) === key)
+    /* a date with no rows at all never appears in a full assembly — skip it */
+    if (!day && acts.length === 0 && hbs.length === 0 && mts.length === 0) continue
+    const habits: Record<string, boolean> = {}
+    for (const h of hbs) habits[h.habitId] = h.done
+    const metrics: Record<string, number> = {}
+    for (const m of mts) metrics[m.metricId] = m.value
+    out.push({
+      date: key,
+      highlight: day?.highlight ?? null,
+      checkIn: day ? parseJson<DayT['checkIn']>(day.checkIn, null) : null,
+      plan: day ? parseJson<DayT['plan']>(day.plan, null) : null,
+      activities: acts.map((a) => ({ id: a.id, goalId: a.goalId, hours: a.hours, start: a.start, end: a.end, label: a.label })),
+      habits,
+      metrics,
+    })
+  }
+  return out.sort((a, b) => (a.date < b.date ? -1 : 1))
+}
+
+const DAY_SCOPED: ReadonlySet<string> = new Set(['day', 'activity', 'dayHabit', 'dayMetric'])
+
+/**
+ * Turn feed rows into a client patch: fresh rows for upserts (mapped exactly
+ * like the full assembly), id lists for deletes, re-folded days for every
+ * day-scoped touch. The last change per (entity, id, date) wins, so a row
+ * created and deleted inside one window collapses to the delete.
+ */
+export async function buildPatchFromChanges(
+  userId: string,
+  rows: ChangeRow[],
+): Promise<{ patch: LedgerPatch; deleted: LedgerDeleted }> {
+  const last = new Map<string, ChangeRow>()
+  for (const r of rows) last.set(`${r.entity}:${r.entityId}:${r.entityDate ?? ''}`, r)
+  const finalRows = Array.from(last.values())
+
+  const patch: LedgerPatch = {}
+  const deleted: LedgerDeleted = {}
+  const pushDelete = (key: keyof LedgerDeleted, id: string) => {
+    const list = deleted[key] ?? []
+    list.push(id)
+    deleted[key] = list
+  }
+  const idsOf = (entity: ChangeEntity, op: ChangeOp) =>
+    Array.from(new Set(finalRows.filter((r) => r.entity === entity && r.op === op).map((r) => r.entityId)))
+
+  /* day-scoped touches (upsert OR delete — the day's content changed either way) */
+  const dates = new Set<string>()
+  for (const r of finalRows) {
+    if (!DAY_SCOPED.has(r.entity)) continue
+    const d = r.entityDate ?? (r.entity === 'day' ? r.entityId : null)
+    if (d) dates.add(d)
+  }
+
+  const goalIds = idsOf('goal', 'upsert')
+  if (goalIds.length) {
+    const fresh = await db.goal.findMany({ where: { userId, id: { in: goalIds } } })
+    patch.goals = fresh.map(toGoalT)
+    const found = new Set(fresh.map((g) => g.id))
+    for (const id of goalIds) if (!found.has(id)) pushDelete('goals', id)
+  }
+  for (const r of finalRows) if (r.entity === 'goal' && r.op === 'delete') pushDelete('goals', r.entityId)
+
+  const taskIds = idsOf('task', 'upsert')
+  if (taskIds.length) {
+    const fresh = await db.task.findMany({ where: { userId, id: { in: taskIds } } })
+    patch.tasks = fresh.map(toTaskT)
+    const found = new Set(fresh.map((t) => t.id))
+    for (const id of taskIds) if (!found.has(id)) pushDelete('tasks', id)
+  }
+  for (const r of finalRows) if (r.entity === 'task' && r.op === 'delete') pushDelete('tasks', r.entityId)
+
+  const habitIds = idsOf('habit', 'upsert')
+  if (habitIds.length) {
+    const fresh = await db.habit.findMany({ where: { userId, id: { in: habitIds } } })
+    patch.habits = fresh.map(toHabitT)
+    const found = new Set(fresh.map((h) => h.id))
+    for (const id of habitIds) if (!found.has(id)) pushDelete('habits', id)
+  }
+  for (const r of finalRows) if (r.entity === 'habit' && r.op === 'delete') pushDelete('habits', r.entityId)
+
+  const metricIds = idsOf('metric', 'upsert')
+  if (metricIds.length) {
+    const fresh = await db.metric.findMany({ where: { userId, id: { in: metricIds } } })
+    patch.metrics = fresh.map(toMetricT)
+    const found = new Set(fresh.map((m) => m.id))
+    for (const id of metricIds) if (!found.has(id)) pushDelete('metrics', id)
+  }
+  for (const r of finalRows) if (r.entity === 'metric' && r.op === 'delete') pushDelete('metrics', r.entityId)
+
+  const dateIds = idsOf('importantDate', 'upsert')
+  if (dateIds.length) {
+    const fresh = await db.importantDate.findMany({ where: { userId, id: { in: dateIds } } })
+    patch.importantDates = fresh.map(toImportantDateT)
+    const found = new Set(fresh.map((d) => d.id))
+    for (const id of dateIds) if (!found.has(id)) pushDelete('importantDates', id)
+  }
+  for (const r of finalRows) if (r.entity === 'importantDate' && r.op === 'delete') pushDelete('importantDates', r.entityId)
+
+  const noteIds = idsOf('note', 'upsert')
+  if (noteIds.length) {
+    const fresh = await db.note.findMany({ where: { userId, id: { in: noteIds } } })
+    patch.notes = fresh.map(toNoteT)
+    const found = new Set(fresh.map((n) => n.id))
+    for (const id of noteIds) if (!found.has(id)) pushDelete('notes', id)
+  }
+  for (const r of finalRows) if (r.entity === 'note' && r.op === 'delete') pushDelete('notes', r.entityId)
+
+  /* inbox: only open items live in the ledger, so a done item fetches as
+   * "missing" and self-heals into a delete below */
+  const inboxIds = idsOf('inbox', 'upsert')
+  if (inboxIds.length) {
+    const fresh = await db.inboxItem.findMany({ where: { userId, id: { in: inboxIds }, done: false } })
+    patch.inbox = fresh.map(toInboxT)
+    const found = new Set(fresh.map((i) => i.id))
+    for (const id of inboxIds) if (!found.has(id)) pushDelete('inbox', id)
+  }
+  for (const r of finalRows) if (r.entity === 'inbox' && r.op === 'delete') pushDelete('inbox', r.entityId)
+
+  if (dates.size) patch.days = await assembleDayRows(userId, Array.from(dates).sort())
+
+  return { patch, deleted }
+}
+
+/**
+ * Everything a mutation route responds with: the patch + deletes caused by
+ * THIS request (feed rows after sinceId) plus the new cursor.
+ */
+export async function mutationPayload(
+  userId: string,
+  sinceId: number,
+): Promise<{ cursor: number; patch: LedgerPatch; deleted: LedgerDeleted }> {
+  const [rows, cursor] = await Promise.all([changesSince(userId, sinceId), maxChangeId()])
+  const { patch, deleted } = await buildPatchFromChanges(userId, rows)
+  await pruneChangeLog(userId)
+  return { cursor, patch, deleted }
+}
+
+/** One-call response builder for mutation routes. */
+export async function respondMutation(userId: string, sinceId: number, extra?: Record<string, unknown>): Promise<Response> {
+  const payload = await mutationPayload(userId, sinceId)
+  return Response.json({ ...payload, ...extra })
 }
 
 /* ============================================================
@@ -1183,7 +1608,7 @@ export interface UserBackupPayload {
     role: string
     createdAt: string
   }
-  goals: Array<{ userId: string; id: string; name: string; unit: string; target: number; deadline: string | null; weeklyTargetHours: number; color: string | null; sortOrder: number; milestones: unknown }>
+  goals: Array<{ userId: string; id: string; name: string; unit: string; target: number; deadline: string | null; weeklyTargetHours: number; color: string | null; sortOrder: number; kind?: string; milestones: unknown }>
   tasks: Array<{ id: string; userId: string; goalId: string | null; label: string; status: string; priority: string; urgent: boolean; important: boolean; lastTouched: string }>
   habits: Array<{ userId: string; id: string; name: string; targetPerWeek: number; color: string | null; sortOrder: number; archived: boolean }>
   metrics: Array<{ userId: string; id: string; name: string; direction: string; unit: string; dailyTarget: number | null; monthlyTarget: number | null; sortOrder: number }>
@@ -1264,15 +1689,17 @@ export async function restoreUserPayload(userId: string, payload: UserBackupPayl
     })
 
     for (const g of payload.goals) {
+      const kind = (g as { kind?: string }).kind === 'hobby' ? 'hobby' : 'goal'
       await tx.goal.upsert({
         where: { userId_id: { userId: g.userId, id: g.id } },
         create: {
           userId: g.userId, id: g.id, name: g.name, unit: g.unit, target: g.target,
           deadline: g.deadline ? new Date(g.deadline) : null,
           weeklyTargetHours: g.weeklyTargetHours, color: g.color, sortOrder: g.sortOrder,
+          kind,
           milestones: JSON.stringify(g.milestones ?? []),
         },
-        update: { name: g.name, unit: g.unit, target: g.target },
+        update: { name: g.name, unit: g.unit, target: g.target, kind },
       })
     }
     for (const t of payload.tasks) {
@@ -1357,6 +1784,12 @@ export async function restoreUserPayload(userId: string, payload: UserBackupPayl
       })
     }
   })
+
+  /* P2-1: restore rewrote rows directly (not via the logging helpers) and
+   * deleted everything first, so any change feed a client has already seen
+   * is now a lie. Bump the watermark — every device full-syncs once. */
+  const watermark = await maxChangeId()
+  await db.user.update({ where: { id: userId }, data: { syncWatermark: watermark + 1 } })
 }
 
 export async function deleteUserAndAllDataExceptUser(userId: string, c: Client = db): Promise<void> {
@@ -1374,6 +1807,108 @@ export async function deleteUserAndAllDataExceptUser(userId: string, c: Client =
   await c.metric.deleteMany({ where: { userId } })
   await c.session.deleteMany({ where: { userId } })
   // Do NOT delete LlmSetting or UserBackup — those are audit/config
+}
+
+/* ============================================================
+ * P2-4: SCOPED SUGGESTIONS CONTEXT (the suggestions diet)
+ * The suggestions route used to call assembleLedgerRaw (read everything
+ * ever) per call. These six scoped queries read ~100 rows instead. Response
+ * shape is unchanged — pure DB-cost reduction.
+ * ============================================================ */
+
+export async function buildSuggestionsContext(
+  userId: string,
+  today: string,
+): Promise<Record<string, unknown>> {
+  const yesterdayDate = new Date(s2d(today).getTime() - 86400000)
+  const yesterday = d2s(yesterdayDate)
+  const weekAhead = new Date(s2d(today).getTime() + 7 * 86400000)
+  const todayDate = s2d(today)
+
+  const [todayDay, todayActs, todayDoneHabitRows, yesterdayDay, habits, taskCounts, overdueTasks, upcoming, inboxCount, goals] =
+    await Promise.all([
+      db.day.findUnique({ where: { userId_date: { userId, date: todayDate } } }),
+      db.activity.findMany({ where: { userId, date: todayDate }, select: { hours: true } }),
+      db.dayHabit.findMany({
+        where: { userId, date: todayDate, done: true },
+        select: { habitId: true },
+      }),
+      db.day.findUnique({ where: { userId_date: { userId, date: yesterdayDate } }, select: { highlight: true } }),
+      db.habit.findMany({ where: { userId }, select: { id: true, name: true, archived: true } }),
+      db.task.groupBy({ by: ['status'], where: { userId }, _count: { _all: true } }),
+      db.task.count({ where: { userId, status: { not: 'done' }, urgent: true } }),
+      db.importantDate.findMany({
+        where: { userId, date: { gte: todayDate, lte: weekAhead } },
+        select: { label: true, date: true },
+        orderBy: { date: 'asc' },
+        take: 5,
+      }),
+      db.inboxItem.count({ where: { userId, done: false } }),
+      db.goal.findMany({ where: { userId }, select: { id: true, name: true }, orderBy: { sortOrder: 'asc' }, take: 5 }),
+    ])
+
+  const todayHours = todayActs.reduce((s, a) => s + a.hours, 0)
+  const todayDoneHabitIds = new Set(todayDoneHabitRows.map((r) => r.habitId))
+  const activeHabits = habits.filter((h) => !h.archived)
+  const todayHabitsDone = activeHabits.filter((h) => todayDoneHabitIds.has(h.id)).length
+  const pendingTasks = taskCounts.filter((t) => t.status !== 'done').reduce((s, t) => s + t._count._all, 0)
+
+  return {
+    today,
+    todayHours,
+    todayHabitsDone,
+    todayHabitsTotal: activeHabits.length,
+    pendingTasks,
+    overdueTasks,
+    upcomingDeadlines: upcoming.map((d) => `${d.label} (${d2s(d.date)})`),
+    inboxCount,
+    yesterdayHighlight: yesterdayDay?.highlight ?? null,
+    goals: goals.map((g) => `${g.name} (${g.id})`),
+    habits: activeHabits.map((h) => h.name).slice(0, 5),
+  }
+}
+
+/* ============================================================
+ * P2-5: HOUSEHOLD AGGREGATE (one query per question, not per user)
+ * The route used to loop users × (window fetch + last-activity fetch).
+ * Two queries total now, independent of household size.
+ * ============================================================ */
+
+export async function householdAggregate(
+  monday: Date,
+  sunday: Date,
+): Promise<Array<{ userId: string; hoursThisWeek: number; daysThisWeek: number; lastDay: Date | null }>> {
+  const [weekActs, lastActs] = await Promise.all([
+    db.activity.findMany({
+      where: { date: { gte: monday, lte: sunday } },
+      select: { userId: true, hours: true, date: true },
+    }),
+    db.activity.groupBy({
+      by: ['userId'],
+      _max: { date: true },
+    }),
+  ])
+  const byUser = new Map<string, { hours: number; days: Set<string> }>()
+  for (const a of weekActs) {
+    let agg = byUser.get(a.userId)
+    if (!agg) {
+      agg = { hours: 0, days: new Set() }
+      byUser.set(a.userId, agg)
+    }
+    agg.hours += a.hours
+    if (a.hours > 0) agg.days.add(d2s(a.date))
+  }
+  const lastMap = new Map(lastActs.map((r) => [r.userId, r._max.date]))
+  const userIds = new Set<string>([...byUser.keys(), ...lastMap.keys()])
+  return Array.from(userIds).map((userId) => {
+    const agg = byUser.get(userId)
+    return {
+      userId,
+      hoursThisWeek: +(agg?.hours ?? 0).toFixed(1),
+      daysThisWeek: agg?.days.size ?? 0,
+      lastDay: lastMap.get(userId) ?? null,
+    }
+  })
 }
 
 /* ============================================================

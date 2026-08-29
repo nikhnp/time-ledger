@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useLedger, useToolEnabled } from '@/store/useLedger'
 import { I } from '@/components/Icon'
 import { RoughBtn, RoughCheck, RoughCell } from '@/components/rough/controls'
@@ -9,13 +9,13 @@ import { Stamp, PanelTitle, ViewHead, NoteRow, EmptyNote, Torn } from '@/compone
 import ConsistencyHeatmap from '@/components/ConsistencyHeatmap'
 import {
   currentStreak, totalHoursAllTime, tasksDoneThisWeek, habitDoneOn, habitStreak, habitWeekDots,
-  priorityTasks, upcomingDeadlines, getRecommendations, isFlagged,
+  priorityTasks, upcomingDeadlines, getRecommendations, isFlagged, hobbiesOf, weekHoursOf, type DeadlineItem,
 } from '@/lib/derivations'
 import { goalCat, habitColor } from '@/lib/colors'
 import { accentHex, goodHex, warnHex, chartHex } from '@/lib/themeColors'
 import { isoDaysAgo, toMin, todayStr } from '@/lib/dates'
 import { LLM } from '@/lib/llm'
-import type { DayT } from '@/lib/types'
+import type { DayT, DayPlanEntry } from '@/lib/types'
 
 export default function TodayView() {
   const ledger = useLedger((s) => s.ledger)!
@@ -24,6 +24,11 @@ export default function TodayView() {
   const addNote = useLedger((s) => s.addNote)
   const deleteNote = useLedger((s) => s.deleteNote)
   const addImportantDate = useLedger((s) => s.addImportantDate)
+  const updateImportantDate = useLedger((s) => s.updateImportantDate)
+  const deleteImportantDate = useLedger((s) => s.deleteImportantDate)
+  const logGoalHours = useLedger((s) => s.logGoalHours)
+  const openReflect = useLedger((s) => s.openReflect)
+  const openActivityEdit = useLedger((s) => s.openActivityEdit)
   const showToast = useLedger((s) => s.showToast)
   const setSettingsOpen = useLedger((s) => s.setSettingsOpen)
 
@@ -92,6 +97,12 @@ export default function TodayView() {
   const recommendations = useMemo(() => getRecommendations(ledger), [ledger])
   const attention = useMemo(() => priorityTasks(ledger).slice(0, 5), [ledger])
   const deadlines = useMemo(() => upcomingDeadlines(ledger), [ledger])
+  const hobbies = useMemo(() => hobbiesOf(ledger), [ledger])
+  /* P2-4: the evening prompt — after 18:00 local, or once the day has ≥1
+   * activity and no check-in yet. Static fallback questions live in the API. */
+  const closeDayEligible = !day?.checkIn && (new Date().getHours() >= 18 || (day && day.activities.length > 0))
+  /* P2-4: this morning's "Tonight you planned…" banner */
+  const morningPlan: DayPlanEntry[] = day?.plan ?? []
   const habitCells = useMemo(() => {
     const map: Record<string, Array<{ date: string; done: boolean }>> = {}
     ledger.habits.forEach((h) => {
@@ -160,11 +171,37 @@ export default function TodayView() {
     setExtracting(null)
   }
 
+  async function quickLogHobby(hobbyId: string, minutes: number, name: string) {
+    const ok = await logGoalHours(hobbyId, +(minutes / 60).toFixed(2))
+    if (ok) showToast(`${minutes} min on ${name} ✓`)
+  }
+
   return (
     <>
       <ViewHead title="Today" sub={
         <><span className="mono" style={{ color: 'var(--accent)', fontWeight: 700 }}>Day {String(dayNumber).padStart(3, '0')}</span> · {dateLine}</>
       } />
+
+      {/* P2-4: the morning banner — tonight you planned… */}
+      {morningPlan.length > 0 && (
+        <div className="card" style={{ borderLeft: '4px solid var(--accent)', transform: 'rotate(-0.3deg)' }}>
+          <PanelTitle icon="calendar">Tonight you planned…</PanelTitle>
+          {morningPlan.map((p, i) => (
+            <div className="attn-row" key={i}>
+              <span className="tag" style={{ minWidth: 52, textAlign: 'center' }}>{p.hours}h</span>
+              <span className="label">{ledger.goals.find((g) => g.id === p.goalId)?.name ?? p.note ?? 'Free intent'}{p.note && p.goalId ? ` — ${p.note}` : ''}</span>
+              <RoughBtn
+                className="btn-sm"
+                onClick={() => { if (p.goalId) void logGoalHours(p.goalId, p.hours) }}
+                disabled={!p.goalId}
+              >
+                log it
+              </RoughBtn>
+            </div>
+          ))}
+          <p className="chart-note" style={{ marginTop: 6 }}>each tap logs the hours — planning stays a suggestion, never an auto-write</p>
+        </div>
+      )}
 
       {/* one thing */}
       <div className="card compass-top">
@@ -172,6 +209,12 @@ export default function TodayView() {
           <div className="compass-label"><I name="compass" /> Today&apos;s one thing</div>
           <p className="compass-task">{day?.checkIn ? day.checkIn.answer : 'No check-in yet — add one below.'}</p>
           <div className="checkin">{day?.checkIn ? `"${day.checkIn.question}"` : ''}</div>
+          {/* P2-4: edit last night's answer — the Reflect tab is the same UI */}
+          {day?.checkIn && (
+            <button className="icon-btn" title="Edit the check-in / highlight" onClick={() => openReflect(day.checkIn!.question)}>
+              <I name="pencil" />
+            </button>
+          )}
         </div>
         <div>
           <div className="compass-strip-head">
@@ -190,6 +233,38 @@ export default function TodayView() {
           </ul>
         </div>
       </div>
+
+      {/* P2-4: close the day — suggestions finally have a face */}
+      {closeDayEligible && <CloseDayCard onOpen={openReflect} />}
+
+      {/* P2-2: hobby strip — quick-log without opening Goals */}
+      {goalsOn && hobbies.length > 0 && (
+        <div className="card">
+          <Stamp icon="spark">Hobbies</Stamp>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {hobbies.map((h) => {
+              const cat = goalCat(h.id, h.color)
+              const wk = weekHoursOf(ledger, h.id)
+              return (
+                <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span className="washi" style={{ background: `${cat.hex}22`, color: cat.hex }}>{h.name}</span>
+                  <span className="mono" style={{ fontSize: '.72rem', color: 'var(--ink-soft)' }}>
+                    {wk.toFixed(1)}/{h.weeklyTargetHours}h this week
+                  </span>
+                  <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
+                    {[15, 30, 60].map((m) => (
+                      <RoughBtn key={m} className="btn-sm" onClick={() => void quickLogHobby(h.id, m, h.name)}>
+                        +{m}
+                      </RoughBtn>
+                    ))}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <p className="chart-note" style={{ marginTop: 8 }}>tapping logs minutes as a real activity — MonthView and your aggregates see it</p>
+        </div>
+      )}
 
       {/* the numbers */}
       <div className="card">
@@ -293,12 +368,7 @@ export default function TodayView() {
           <PanelTitle icon="calendar">Coming up</PanelTitle>
           <div style={{ flex: 1 }}>
             {deadlines.length > 0 ? deadlines.map((d, i) => (
-              <div className="deadline-row" key={i}>
-                <span>{d.label}</span>
-                <span className={`count${d.du > 14 ? ' far' : ''}`}>
-                  {d.du === 0 ? 'today' : d.du > 0 ? `in ${d.du}d` : `${Math.abs(d.du)}d over`}
-                </span>
-              </div>
+              <DeadlineRow key={`${d.label}-${d.date}-${i}`} item={d} onUpdate={updateImportantDate} onDelete={deleteImportantDate} />
             )) : <EmptyNote>Nothing coming up.</EmptyNote>}
             {flaggedNotes.map((n) => (
               <div className="deadline-row" key={n.id}>
@@ -344,6 +414,20 @@ export default function TodayView() {
         <Stamp icon="activity">Timeline</Stamp>
         <div className="tl-axis"><span>6am</span><span>9</span><span>12pm</span><span>3</span><span>6</span><span>9</span><span>12am</span></div>
         {tlBlocks.length > 0 ? <Timeline blocks={tlBlocks} /> : <EmptyNote>no blocks yet</EmptyNote>}
+        {/* P2-3: correct the record — tap an entry to edit/delete it */}
+        {day && day.activities.length > 0 && (
+          <div style={{ marginTop: 10 }}>
+            {day.activities.map((a) => (
+              <div className="attn-row" key={a.id}>
+                <span className="tag" style={{ minWidth: 52, textAlign: 'center' }}>{a.hours}h</span>
+                <span className="label">{a.label ?? ledger.goals.find((g) => g.id === a.goalId)?.name ?? 'Activity'}{a.start ? ` · ${a.start}${a.end ? `–${a.end}` : ''}` : ''}</span>
+                <button className="icon-btn" title="Correct this entry" onClick={() => openActivityEdit(a.id, t)}>
+                  <I name="pencil" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* notes */}
@@ -370,5 +454,124 @@ export default function TodayView() {
       </div>
       )}
     </>
+  )
+}
+
+/* ---------- P2-4: close-the-day card ---------- */
+
+/** Evening ritual beat 1 — prompt. Pulls 3 chips from /api/suggestions
+ * (the endpoint the plan called "orphaned" — it finally has a caller).
+ * LLM down → the API's static fallback questions still render. */
+function CloseDayCard({ onOpen }: { onOpen: (question?: string | null) => void }) {
+  const [questions, setQuestions] = useState<string[] | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/suggestions')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancelled && Array.isArray(data?.questions)) setQuestions(data.questions.slice(0, 3))
+      })
+      .catch(() => { if (!cancelled) setQuestions([]) })
+    return () => { cancelled = true }
+  }, [])
+
+  return (
+    <div className="card" style={{ borderLeft: '4px solid var(--accent)' }}>
+      <PanelTitle icon="compass">Close the day</PanelTitle>
+      <p className="note" style={{ fontSize: '.86rem', marginBottom: 8 }}>
+        A minute of reflection — pick a question, answer in one honest line.
+      </p>
+      {questions === null ? (
+        <p className="rec-hint">thinking about your day…</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {questions.map((q, i) => (
+            <button key={i} className="rec-item" onClick={() => onOpen(q)} type="button">
+              <span className="ri-icon"><I name="compass" /></span>
+              <span className="ri-text">{q}</span>
+              <span className="ri-kind">reflect</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div style={{ marginTop: 10 }}>
+        <RoughBtn variant="primary" className="btn-sm" onClick={() => onOpen(null)}>
+          <I name="pencil" /> Write my own
+        </RoughBtn>
+      </div>
+    </div>
+  )
+}
+
+/* ---------- P2-3: editable Coming-up row ---------- */
+
+/** importantDate rows fix in place (the wrong-date fix P2-9 leaned on);
+ * goal deadlines keep a read-only row (edit those in Goals). */
+function DeadlineRow({
+  item, onUpdate, onDelete,
+}: {
+  item: DeadlineItem
+  onUpdate: (id: string, patch: { label?: string; date?: string; type?: string }) => void
+  onDelete: (id: string) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [date, setDate] = useState(item.date)
+  const [label, setLabel] = useState(item.label)
+
+  if (!item.id) {
+    return (
+      <div className="deadline-row">
+        <span>{item.label}</span>
+        <span className={`count${item.du > 14 ? ' far' : ''}`}>
+          {item.du === 0 ? 'today' : item.du > 0 ? `in ${item.du}d` : `${Math.abs(item.du)}d over`}
+        </span>
+      </div>
+    )
+  }
+
+  if (editing) {
+    return (
+      <div className="deadline-row" style={{ flexWrap: 'wrap', gap: 6 }}>
+        <input
+          type="text"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          style={{ flex: 1, minWidth: 110, fontSize: '.8rem' }}
+          aria-label="Label"
+        />
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ fontSize: '.78rem' }} aria-label="Date" />
+        <button
+          className="icon-btn"
+          title="Save"
+          onClick={() => {
+            onUpdate(item.id!, { ...(label.trim() ? { label: label.trim() } : {}), ...(date !== item.date ? { date } : {}) })
+            setEditing(false)
+          }}
+        >
+          <I name="check" />
+        </button>
+        <button className="icon-btn" title="Cancel" onClick={() => { setEditing(false); setLabel(item.label); setDate(item.date) }}>
+          <I name="x" />
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="deadline-row">
+      <span>{item.label}</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <span className={`count${item.du > 14 ? ' far' : ''}`}>
+          {item.du === 0 ? 'today' : item.du > 0 ? `in ${item.du}d` : `${Math.abs(item.du)}d over`}
+        </span>
+        <button className="icon-btn" title="Fix the date or label" onClick={() => setEditing(true)}>
+          <I name="pencil" />
+        </button>
+        <button className="icon-btn" title="Remove" onClick={() => onDelete(item.id!)}>
+          <I name="trash" />
+        </button>
+      </span>
+    </div>
   )
 }

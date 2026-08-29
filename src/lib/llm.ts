@@ -67,12 +67,13 @@ export const LLM = {
     return m
   },
 
-  /** v10: chat via the server endpoint (uses DB-stored fallback chain). */
-  async chat(system: string, user: string): Promise<string> {
+  /** v10: chat via the server endpoint (uses DB-stored fallback chain).
+   * P3-2: `route` names the caller so usage lands on the right row. */
+  async chat(system: string, user: string, route = 'chat'): Promise<string> {
     const r = await fetch('/api/llm/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ system, user }),
+      body: JSON.stringify({ system, user, route }),
     })
     if (!r.ok) {
       const b = (await r.json().catch(() => ({}))) as { error?: string }
@@ -82,8 +83,8 @@ export const LLM = {
     return b.text
   },
 
-  async chatJSON<T>(system: string, user: string): Promise<T> {
-    const raw = await this.chat(system, user)
+  async chatJSON<T>(system: string, user: string, route = 'chat'): Promise<T> {
+    const raw = await this.chat(system, user, route)
     let s = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim()
     const a = s.indexOf('{'), b = s.lastIndexOf('}')
     const a2 = s.indexOf('['), b2 = s.lastIndexOf(']')
@@ -96,7 +97,7 @@ export const LLM = {
 
   async test(): Promise<number> {
     const t0 = Date.now()
-    await this.chat('Reply with the single word: ok', 'ping')
+    await this.chat('Reply with the single word: ok', 'ping', 'test')
     return Date.now() - t0
   },
 
@@ -113,15 +114,19 @@ export const LLM = {
       'JSON shape:\n' +
       '{"date":"YYYY-MM-DD","highlight":"one short line","checkIn":{"question":"...","answer":"..."},' +
       '"activities":[{"goalId":"...","label":"short label","hours":1.5,"start":"HH:MM","end":"HH:MM"}],' +
-      '"habits":[{"habitId":"...","done":true}],"metrics":[{"metricId":"...","value":2.5}],"newNotes":["..."]}\n\n' +
+      '"habits":[{"habitId":"...","done":true}],"metrics":[{"metricId":"...","value":2.5}],"newNotes":["..."],' +
+      '"dates":[{"label":"...","date":"YYYY-MM-DD","type":"deadline|reminder|event|birthday"}]}\n\n' +
       'Rules:\n' +
       `- Today is ${todayStr()}. Use it unless another date is clearly stated.\n` +
       '- Convert spoken times to 24h HH:MM ("nine to half past twelve" = 09:00 to 12:30). hours must equal end minus start.\n' +
       '- No times given? Omit start/end and give hours. Rough duration ("for a while") = 1 hour.\n' +
       '- Only include what was actually said. Never invent goalIds or habitIds.\n' +
       '- Reminders, deadlines, ideas, promises -> newNotes as plain sentences.\n' +
+      '- FUTURE dated items ("deadline after exactly a week", "next monday", "in 3 days", "on the 15th") -> ' +
+      'the dates[] block: resolve the phrase against today ("exactly a week" = +7 days, "next monday" = the coming monday), ' +
+      'label = what is due (max 8 words), type = deadline|reminder|event|birthday. Do NOT also put it in newNotes.\n' +
       '- highlight: one short line about what mattered. checkIn only if the person reflected on the day.'
-    return this.chatJSON<Record<string, unknown>>(system, text)
+    return this.chatJSON<Record<string, unknown>>(system, text, 'structure')
   },
 
   /* ---------- job 2: note → date ---------- */
@@ -129,7 +134,7 @@ export const LLM = {
     const system =
       `Today is ${todayStr()}. From the note below, extract a date if one is stated or clearly implied (resolve "Friday", "end of next week", "the 28th", "before the trip" style language). ` +
       'Output ONLY {"date":"YYYY-MM-DD","label":"short label, max 5 words","type":"deadline|birthday|reminder|event"} or {} if no date is determinable. No prose.'
-    const obj = await this.chatJSON<{ date?: string; label?: string; type?: string }>(system, `Note: "${noteText.slice(0, 400)}"`)
+    const obj = await this.chatJSON<{ date?: string; label?: string; type?: string }>(system, `Note: "${noteText.slice(0, 400)}"`, 'extract-date')
     if (!obj || !obj.date || !/^\d{4}-\d{2}-\d{2}$/.test(obj.date)) return null
     return {
       date: obj.date,
@@ -148,7 +153,7 @@ export const LLM = {
       'Highlights from the days (oldest first):\n' +
       (highlights.length ? highlights.map((h) => `- "${h}"`).join('\n') : '- (none written)') + '\n' +
       `Stats: ${stats}\nIf there is nothing at all, write one gentle sentence about the blank page.`
-    return (await this.chat(system, user)).trim()
+    return (await this.chat(system, user, 'write-words')).trim()
   },
 }
 

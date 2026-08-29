@@ -6,6 +6,8 @@ import { create } from 'zustand'
 import type {
   HouseholdRow,
   Ledger,
+  LedgerDeleted,
+  LedgerPatch,
   LedgerUser,
   MergeResult,
   LlmConfigClientT,
@@ -15,14 +17,22 @@ import type {
   UserBackupT,
   ScreenEntryT,
   EntryRecommendation,
+  MutationResponse,
+  DayPlanEntry,
+  LlmUsageT,
 } from '@/lib/types'
 import { clientTz, todayStr } from '@/lib/dates'
+import {
+  lastUserId, rememberUserId, loadMirror, saveMirror, clearMirror,
+  enqueue, outboxAll, outboxCount, outboxDelete, outboxBumpAttempts, clientId as newClientId,
+  type OutboxEntry,
+} from '@/lib/local'
 
 export type ViewId =
-  | 'today' | 'week' | 'month' | 'habits' | 'board' | 'budget'
+  | 'today' | 'week' | 'month' | 'review' | 'habits' | 'board' | 'budget'
   | 'goals' | 'inbox' | 'matrix' | 'notes' | 'people' | 'screen'
 
-export type EntryTab = 'record' | 'paste' | 'manual' | 'timer' | 'focus'
+export type EntryTab = 'record' | 'paste' | 'manual' | 'timer' | 'focus' | 'reflect'
 export type Theme = 'light' | 'dark' | 'sage' | 'clay' | 'slate'
 
 interface ToastMsg { msg: string; at: number }
@@ -33,10 +43,18 @@ interface LedgerStore {
   /** v10: when set, this session is an admin impersonating the user with this id. */
   impersonatedBy: string | null
   ledger: Ledger | null
+  /** P2-1: ChangeLog cursor of the last server response this device applied. */
+  syncCursor: number
+  /** P2-10: queued offline mutations waiting to replay. */
+  pending: number
   view: ViewId
   toast: ToastMsg | null
   entryOpen: boolean
   entryTab: EntryTab
+  /** P2-3: the activity being corrected (opens the sheet in edit mode). */
+  activityEdit: { id: string; date: string } | null
+  /** P2-4: suggestion chip that opened the Reflect tab. */
+  reflectPrefill: string | null
   moreOpen: boolean
   focusOpen: boolean
   settingsOpen: boolean
@@ -65,9 +83,20 @@ interface LedgerStore {
   refresh: () => Promise<void>
   showToast: (msg: string) => void
 
+  /** P2-1: apply a server response (full ledger or patch+cursor) to the store. */
+  absorb: (data: MutationResponse) => void
+  /** P2-1: pull everything missed since the stored cursor (reconnect/wake). */
+  resync: () => Promise<void>
+  /** P3-1: one aggregate request for the weekly review view. */
+  fetchReview: (start: string) => Promise<Record<string, unknown> | null>
+
   setView: (v: ViewId) => void
   openEntry: (tab: EntryTab) => void
   setEntryTab: (tab: EntryTab) => void
+  /** P2-3: open the entry sheet in activity-edit mode. */
+  openActivityEdit: (id: string, date: string) => void
+  /** P2-4: open the Reflect tab (optionally prefilled from a suggestion chip). */
+  openReflect: (question?: string | null) => void
   closeSheets: () => void
   setMoreOpen: (open: boolean) => void
   setFocusOpen: (open: boolean) => void
@@ -78,6 +107,15 @@ interface LedgerStore {
   toggleHabit: (habitId: string, date?: string) => Promise<void>
   addNote: (text: string, date?: string) => Promise<string | null>
   deleteNote: (id: string) => Promise<void>
+  /** P2-3: fix a typo'd note. */
+  editNote: (id: string, text: string) => Promise<void>
+  /** P2-3: correct the record — edit / delete an activity. */
+  patchActivity: (id: string, patch: { hours?: number; start?: string | null; end?: string | null; label?: string | null; goalId?: string | null; date?: string }) => Promise<boolean>
+  removeActivity: (id: string) => Promise<void>
+  /** P2-4: save tomorrow's plan (a suggestion, never an auto-write). */
+  saveDayPlan: (date: string, plan: DayPlanEntry[] | null) => Promise<boolean>
+  /** P2-10: replay queued offline mutations (online event / interval). */
+  drainOutbox: () => Promise<void>
   addTask: (goalId: string | null, label: string, priority?: 'normal' | 'high', opts?: { status?: 'todo' | 'doing' | 'done'; urgent?: boolean; important?: boolean }) => Promise<void>
   updateTask: (id: string, patch: Record<string, unknown>) => Promise<void>
   deleteTask: (id: string) => Promise<void>
@@ -91,7 +129,10 @@ interface LedgerStore {
   inboxToHabit: (id: string) => Promise<void>
   inboxToDeadline: (id: string, date: string) => Promise<void>
   addImportantDate: (label: string, date: string, type: string) => Promise<boolean>
-  addGoal: (name: string, opts?: { target?: number; unit?: string; weeklyTargetHours?: number }) => Promise<boolean>
+  /** P2-3: fix a wrong date in place (Coming up rows). */
+  updateImportantDate: (id: string, patch: { label?: string; date?: string; type?: string }) => Promise<void>
+  deleteImportantDate: (id: string) => Promise<void>
+  addGoal: (name: string, opts?: { target?: number; unit?: string; weeklyTargetHours?: number; kind?: 'goal' | 'hobby' }) => Promise<boolean>
   addHabit: (name: string, targetPerWeek?: number) => Promise<boolean>
   updateHabit: (id: string, patch: { name?: string; targetPerWeek?: number; archived?: boolean }) => Promise<void>
   deleteHabit: (id: string) => Promise<void>
@@ -103,7 +144,7 @@ interface LedgerStore {
   // v10 additions
   fetchDockConfig: () => Promise<void>
   saveDockConfig: (config: DockConfigT) => Promise<string | null>
-  fetchLlmSettings: () => Promise<LlmConfigClientT[] | null>
+  fetchLlmSettings: () => Promise<{ settings: LlmConfigClientT[]; usage?: LlmUsageT } | null>
   saveLlmSetting: (params: {
     provider: string
     model: string
@@ -145,14 +186,108 @@ async function api<T>(url: string, init?: RequestInit): Promise<{ ok: true; data
     if (!r.ok) return { ok: false, error: data?.error ?? `HTTP ${r.status}` }
     return { ok: true, data }
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : 'network error' }
+    const error = e instanceof Error ? e.message : 'network error'
+    /* P2-10: an OFFLINE mutation is not a failed mutation — queue the exact
+     * request and replay it on reconnect. Boot/auth/tz calls never queue
+     * (they are session-level, and a replayed login would be surprising).
+     * Replays are idempotent: captures carry clientIds, the server upserts. */
+    const method = (init?.method ?? 'GET').toUpperCase()
+    const queueable = method !== 'GET' && !url.startsWith('/api/auth/') && url !== '/api/account/tz'
+    if (isNetworkError(error) && queueable && typeof window !== 'undefined') {
+      const { useLedger } = await import('@/store/useLedger')
+      const uid = useLedger.getState().user?.id ?? null
+      if (uid) {
+        await enqueue({
+          url,
+          method,
+          body: typeof init?.body === 'string' ? init.body : null,
+          createdAt: Date.now(),
+          userId: uid,
+        })
+        useLedger.setState({ pending: await outboxCount() })
+        useLedger.getState().showToast('Offline — entry queued, it will sync on reconnect')
+      }
+    }
+    return { ok: false, error }
   }
 }
 
 const DOCK_KEY = 'ledger_dock'
 const THEME_KEY = 'ledger_theme'
+const CURSOR_KEY = 'ledger_sync_cursor'
 const VALID_TOOLS: ViewId[] = ['habits', 'board', 'budget', 'goals', 'inbox', 'matrix', 'notes', 'people', 'screen']
 const VALID_THEMES: Theme[] = ['light', 'dark', 'sage', 'clay', 'slate']
+
+/* ---------- P2-10: mirror write-through + outbox drain ---------- */
+
+let mirrorTimer: ReturnType<typeof setTimeout> | null = null
+/** Debounced mirror write — absorb() can fire many times per second. */
+function scheduleMirrorSave(userId: string, ledger: Ledger): void {
+  if (mirrorTimer) clearTimeout(mirrorTimer)
+  mirrorTimer = setTimeout(() => {
+    mirrorTimer = null
+    void saveMirror(userId, ledger)
+  }, 250)
+}
+
+function isNetworkError(msg: string): boolean {
+  return /network error|failed to fetch|networkerror|load failed|timeout/i.test(msg)
+}
+
+/* ---------- P2-1: delta sync helpers ---------- */
+
+function loadCursor(): number {
+  try { return Math.max(0, Math.trunc(Number(localStorage.getItem(CURSOR_KEY))) || 0) } catch { return 0 }
+}
+function saveCursor(n: number): void {
+  try { localStorage.setItem(CURSOR_KEY, String(n)) } catch { /* ignore */ }
+}
+function clearCursor(): void {
+  try { localStorage.removeItem(CURSOR_KEY) } catch { /* ignore */ }
+}
+
+function upsertById<T extends { id: string }>(list: T[], items: T[]): T[] {
+  if (!items.length) return list
+  const map = new Map(list.map((x) => [x.id, x]))
+  for (const item of items) map.set(item.id, item) // updated rows keep their position; new ones append
+  return Array.from(map.values())
+}
+
+function removeIds<T extends { id: string }>(list: T[], ids: string[] | undefined): T[] {
+  if (!ids || ids.length === 0) return list
+  const gone = new Set(ids)
+  return list.filter((x) => !gone.has(x.id))
+}
+
+/** Merge a server patch into the local ledger (pure — DB stays truth). */
+function mergePatch(led: Ledger, patch: LedgerPatch | undefined, deleted: LedgerDeleted | undefined): Ledger {
+  const next: Ledger = { ...led }
+  if (patch?.goals) next.goals = upsertById(next.goals, patch.goals)
+  if (patch?.tasks) next.tasks = upsertById(next.tasks, patch.tasks)
+  if (patch?.habits) next.habits = upsertById(next.habits, patch.habits)
+  if (patch?.metrics) next.metrics = upsertById(next.metrics, patch.metrics)
+  if (patch?.importantDates) next.importantDates = upsertById(next.importantDates, patch.importantDates)
+  // keep the assembly's ordering: notes by date, inbox by addedAt desc
+  if (patch?.notes) next.notes = upsertById(next.notes, patch.notes).sort((a, b) => (a.date === b.date ? (a.id < b.id ? -1 : 1) : a.date < b.date ? -1 : 1))
+  if (patch?.inbox) next.inbox = upsertById(next.inbox, patch.inbox).sort((a, b) => (a.addedAt === b.addedAt ? 0 : a.addedAt > b.addedAt ? -1 : 1))
+  if (patch?.days) {
+    // server sends fully re-folded DayT rows — replace by date
+    const map = new Map(next.days.map((d) => [d.date, d]))
+    for (const d of patch.days) map.set(d.date, d)
+    next.days = Array.from(map.values()).sort((a, b) => (a.date < b.date ? -1 : 1))
+  }
+  next.goals = removeIds(next.goals, deleted?.goals)
+  next.tasks = removeIds(next.tasks, deleted?.tasks)
+  next.habits = removeIds(next.habits, deleted?.habits)
+  next.metrics = removeIds(next.metrics, deleted?.metrics)
+  next.importantDates = removeIds(next.importantDates, deleted?.importantDates)
+  next.notes = removeIds(next.notes, deleted?.notes)
+  next.inbox = removeIds(next.inbox, deleted?.inbox)
+  next.meta = { ...next.meta, updated: todayStr() }
+  return next
+}
+
+let lastResyncAt = 0
 
 function loadDock(): ViewId[] {
   try {
@@ -183,10 +318,14 @@ export const useLedger = create<LedgerStore>((set, get) => ({
   user: null,
   impersonatedBy: null,
   ledger: null,
+  syncCursor: typeof window === 'undefined' ? 0 : loadCursor(),
+  pending: 0,
   view: 'today',
   toast: null,
   entryOpen: false,
   entryTab: 'record',
+  activityEdit: null,
+  reflectPrefill: null,
   moreOpen: false,
   focusOpen: false,
   settingsOpen: false,
@@ -218,28 +357,47 @@ export const useLedger = create<LedgerStore>((set, get) => ({
   },
 
   async boot() {
-    const r = await api<{ user: LedgerUser; ledger: Ledger; impersonatedBy?: string | null }>('/api/auth/me')
+    /* P2-10: paint the cached ledger BEFORE the network round-trip —
+     * instant views on cold boot; /api/auth/me reconciles right after.
+     * Impersonation bypasses the cache entirely (risk register). */
+    const lastUser = lastUserId()
+    if (lastUser && !get().ledger && !get().user) {
+      const cached = await loadMirror<Ledger>(lastUser)
+      if (cached && cached.days && cached.goals) set({ ledger: cached })
+    }
+    const r = await api<{ user: LedgerUser; ledger: Ledger; impersonatedBy?: string | null; cursor?: number }>('/api/auth/me')
     if (r.ok) {
       set({
         user: r.data.user,
         ledger: r.data.ledger,
         impersonatedBy: r.data.impersonatedBy ?? null,
       })
+      // P2-1: adopt the server's change-feed cursor for future delta syncs
+      get().absorb({ cursor: r.data.cursor })
+      // P2-10: mirror the fresh snapshot + remember whose book this is
+      rememberUserId(r.data.user.id)
+      if (!r.data.impersonatedBy) void saveMirror(r.data.user.id, r.data.ledger)
       // v10: fetch dock config from DB
       void get().fetchDockConfig()
       // P1-5: keep the server's copy of this device's timezone current
       void api('/api/account/tz', { method: 'POST', body: JSON.stringify({ tz: clientTz() }) })
     }
     set({ booted: true })
+    // P2-10: surface anything queued from a previous offline session
+    set({ pending: await outboxCount() })
+    void get().drainOutbox()
   },
 
   async login(name, password) {
-    const r = await api<{ user: LedgerUser; ledger: Ledger }>('/api/auth/login', {
+    const r = await api<{ user: LedgerUser; ledger: Ledger; cursor?: number }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ name, password, tz: clientTz() }),
     })
     if (!r.ok) return r.error
     set({ user: r.data.user, ledger: r.data.ledger, view: 'today', household: null })
+    rememberUserId(r.data.user.id)
+    void saveMirror(r.data.user.id, r.data.ledger)
+    get().absorb({ cursor: r.data.cursor })
     /* v11 fix: the dock/tool config must load on login too — previously only
      * boot() fetched it, so a fresh SPA login left dockConfig null and every
      * tool behaved as enabled (tool on/off in Settings appeared broken). */
@@ -247,12 +405,15 @@ export const useLedger = create<LedgerStore>((set, get) => ({
     return null
   },
   async signup(name, password) {
-    const r = await api<{ user: LedgerUser; ledger: Ledger }>('/api/auth/signup', {
+    const r = await api<{ user: LedgerUser; ledger: Ledger; cursor?: number }>('/api/auth/signup', {
       method: 'POST',
       body: JSON.stringify({ name, password, tz: clientTz() }),
     })
     if (!r.ok) return r.error
     set({ user: r.data.user, ledger: r.data.ledger, view: 'today', household: null })
+    rememberUserId(r.data.user.id)
+    void saveMirror(r.data.user.id, r.data.ledger)
+    get().absorb({ cursor: r.data.cursor })
     void get().fetchDockConfig()
     return null
   },
@@ -265,10 +426,16 @@ export const useLedger = create<LedgerStore>((set, get) => ({
 
 
   async logout() {
+    const uid = get().user?.id
     await api('/api/auth/logout', { method: 'POST' })
+    clearCursor()
+    if (uid) void clearMirror(uid)
+    rememberUserId(null)
     set({
       user: null,
       ledger: null,
+      syncCursor: 0,
+      pending: 0,
       view: 'today',
       household: null,
       entryOpen: false,
@@ -286,30 +453,92 @@ export const useLedger = create<LedgerStore>((set, get) => ({
 
   async refresh() {
     if (!get().user) return
-    const r = await api<{ ledger: Ledger }>('/api/ledger')
-    if (r.ok) set({ ledger: r.data.ledger })
+    const r = await api<MutationResponse>('/api/ledger')
+    if (r.ok) get().absorb(r.data)
   },
 
   showToast(msg) {
     set({ toast: { msg, at: Date.now() } })
   },
 
+  /** P2-1: apply a server response — full ledger (boot/gap) or patch+cursor. */
+  absorb(data) {
+    if (typeof data.cursor === 'number' && Number.isFinite(data.cursor)) {
+      set({ syncCursor: data.cursor })
+      saveCursor(data.cursor)
+    }
+    const user = get().user
+    const impersonating = !!get().impersonatedBy
+    const persist = (led: Ledger) => {
+      // P2-10: write-through to the IndexedDB mirror (impersonation excluded)
+      if (user && !impersonating) scheduleMirrorSave(user.id, led)
+    }
+    if (data.ledger) {
+      set({ ledger: data.ledger })
+      persist(data.ledger)
+      return
+    }
+    const led = get().ledger
+    if (!led) return
+    if (!data.patch && !data.deleted) {
+      persist(led) // cursor-only adopt — refresh the snapshot age anyway
+      return
+    }
+    const next = mergePatch(led, data.patch, data.deleted)
+    set({ ledger: next })
+    persist(next)
+  },
+
+  /** P3-1: one aggregate request for the weekly review view. */
+  async fetchReview(start) {
+    const r = await api<Record<string, unknown>>(`/api/review/week?start=${encodeURIComponent(start)}`)
+    return r.ok ? r.data : null
+  },
+
+  /** P2-1: pull everything the device missed since its cursor (reconnect, wake). */
+  async resync() {
+    if (!get().user) return
+    const now = Date.now()
+    if (now - lastResyncAt < 2000) return
+    lastResyncAt = now
+    const r = await api<MutationResponse>(`/api/ledger?since=${get().syncCursor}`)
+    if (r.ok) get().absorb(r.data)
+  },
+
   setView(view) { set({ view, moreOpen: false }) },
-  openEntry(tab) { set({ entryOpen: true, entryTab: tab, moreOpen: false }) },
+  openEntry(tab) { set({ entryOpen: true, entryTab: tab, moreOpen: false, activityEdit: null, reflectPrefill: null }) },
   setEntryTab(entryTab) { set({ entryTab }) },
-  closeSheets() { set({ entryOpen: false, moreOpen: false }) },
+  openActivityEdit(id, date) { set({ entryOpen: true, moreOpen: false, activityEdit: { id, date }, reflectPrefill: null }) },
+  openReflect(question) { set({ entryOpen: true, moreOpen: false, entryTab: 'reflect', activityEdit: null, reflectPrefill: question ?? null }) },
+  closeSheets() { set({ entryOpen: false, moreOpen: false, activityEdit: null, reflectPrefill: null }) },
   setMoreOpen(moreOpen) { set({ moreOpen }) },
   setFocusOpen(focusOpen) { set({ focusOpen }) },
   setSettingsOpen(settingsOpen) { set({ settingsOpen }) },
   setAdminOpen(adminOpen) { set({ adminOpen }) },
 
   async mergeDeltas(deltas) {
-    const r = await api<{ ledger: Ledger; results: MergeResult[] }>('/api/merge', {
+    /* P2-10: stamp every capture with idempotency keys so a replayed
+     * offline delta upserts instead of appending duplicates. */
+    const stamped = deltas.map((d0) => {
+      const d = d0 as Record<string, unknown>
+      const acts = Array.isArray(d.activities)
+        ? (d.activities as Array<Record<string, unknown>>).map((a) => ({ ...a, clientId: a.clientId ?? newClientId('act') }))
+        : d.activities
+      const notes = Array.isArray(d.newNotes)
+        ? (d.newNotes as Array<string | { text?: string; clientId?: string }>).map((n) =>
+            typeof n === 'string' ? { text: n, clientId: newClientId('note') } : { ...n, clientId: n.clientId ?? newClientId('note') })
+        : d.newNotes
+      const dates = Array.isArray(d.dates)
+        ? (d.dates as Array<Record<string, unknown>>).map((x) => ({ ...x, clientId: x.clientId ?? newClientId('date') }))
+        : d.dates
+      return { ...d, activities: acts, newNotes: notes, dates }
+    })
+    const r = await api<MutationResponse & { results: MergeResult[] }>('/api/merge', {
       method: 'POST',
-      body: JSON.stringify(deltas.length === 1 ? deltas[0] : deltas),
+      body: JSON.stringify(stamped.length === 1 ? stamped[0] : stamped),
     })
     if (!r.ok) return { error: r.error }
-    set({ ledger: r.data.ledger })
+    get().absorb(r.data)
     return { results: r.data.results }
   },
 
@@ -322,35 +551,160 @@ export const useLedger = create<LedgerStore>((set, get) => ({
       if (day) day.habits[habitId] = !day.habits[habitId]
       set({ ledger: { ...led, days: [...led.days] } })
     }
-    const r = await api<{ ledger: Ledger }>('/api/habits/toggle', {
+    const r = await api<MutationResponse>('/api/habits/toggle', {
       method: 'POST',
       body: JSON.stringify({ habitId, date }),
     })
-    if (r.ok) set({ ledger: r.data.ledger })
+    if (r.ok) get().absorb(r.data)
   },
 
   async addNote(text, date) {
-    const r = await api<{ ledger: Ledger; noteId: string }>('/api/notes', {
+    const r = await api<MutationResponse & { noteId: string }>('/api/notes', {
       method: 'POST',
-      body: JSON.stringify({ text, date }),
+      // P2-10: idempotency key — a replayed offline note never duplicates
+      body: JSON.stringify({ text, date, clientId: newClientId('note') }),
     })
     if (!r.ok) { get().showToast(r.error); return null }
-    set({ ledger: r.data.ledger })
+    get().absorb(r.data)
     return r.data.noteId
   },
 
   async deleteNote(id) {
-    const r = await api<{ ledger: Ledger }>(`/api/notes/${id}`, { method: 'DELETE' })
-    if (r.ok) set({ ledger: r.data.ledger })
+    const r = await api<MutationResponse>(`/api/notes/${id}`, { method: 'DELETE' })
+    if (r.ok) get().absorb(r.data)
+  },
+
+  /** P2-3: fix a typo'd note — optimistic text swap, then the patch lands. */
+  async editNote(id, text) {
+    const led = get().ledger
+    if (led) {
+      const notes = led.notes.map((n) => (n.id === id ? { ...n, text } : n))
+      set({ ledger: { ...led, notes } })
+    }
+    const r = await api<MutationResponse>(`/api/notes/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ text }),
+    })
+    if (r.ok) get().absorb(r.data)
+    else get().showToast(r.error)
+  },
+
+  /** P2-3: correct the record — hours/times/label/goal/date, same rules as
+   * capture (the server re-derives and re-folds the affected days). */
+  async patchActivity(id, patch) {
+    const led = get().ledger
+    /* optimistic — every aggregate derives from the store, so views shift
+     * immediately (edit 3.5h → 1.5h moves month totals by −2h instantly) */
+    if (led) {
+      const days = led.days.map((day) => {
+        const idx = day.activities.findIndex((a) => a.id === id)
+        if (idx === -1) return day
+        const activities = [...day.activities]
+        activities[idx] = {
+          ...activities[idx],
+          ...(patch.hours !== undefined ? { hours: patch.hours } : {}),
+          ...(patch.start !== undefined ? { start: patch.start } : {}),
+          ...(patch.end !== undefined ? { end: patch.end } : {}),
+          ...(patch.label !== undefined ? { label: patch.label } : {}),
+          ...(patch.goalId !== undefined ? { goalId: patch.goalId } : {}),
+        }
+        return { ...day, activities }
+      })
+      set({ ledger: { ...led, days } })
+    }
+    const r = await api<MutationResponse>(`/api/activities/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    })
+    if (r.ok) {
+      get().absorb(r.data) // re-folded days replace the optimistic guess
+      return true
+    }
+    get().showToast(r.error)
+    await get().refresh()
+    return false
+  },
+
+  async removeActivity(id) {
+    const led = get().ledger
+    if (led) {
+      const days = led.days.map((day) =>
+        day.activities.some((a) => a.id === id) ? { ...day, activities: day.activities.filter((a) => a.id !== id) } : day,
+      )
+      set({ ledger: { ...led, days } })
+    }
+    const r = await api<MutationResponse>(`/api/activities/${id}`, { method: 'DELETE' })
+    if (r.ok) get().absorb(r.data)
+    else get().showToast(r.error)
+  },
+
+  /** P2-4: write tomorrow's intents (PATCH /api/days/[date]) — the planner
+   * is a suggestion: logging them tomorrow stays a one-tap decision. */
+  async saveDayPlan(date, plan) {
+    const led = get().ledger
+    /* optimistic */
+    if (led) {
+      const days = led.days.map((day) => (day.date === date ? { ...day, plan } : day))
+      set({ ledger: { ...led, days } })
+    }
+    const r = await api<MutationResponse>(`/api/days/${date}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ plan }),
+    })
+    if (r.ok) {
+      get().absorb(r.data)
+      return true
+    }
+    get().showToast(r.error)
+    return false
+  },
+
+  /** P2-10: replay queued offline mutations, FIFO. Responses carry patches,
+   * so replay application is identical to live application. */
+  async drainOutbox() {
+    if (!get().user || typeof navigator === 'undefined' || !navigator.onLine) return
+    const uid = get().user!.id
+    const entries = await outboxAll()
+    let changed = false
+    for (const e of entries) {
+      if (e.userId !== uid) continue // another account's queue stays put
+      try {
+        const r = await fetch(e.url, {
+          method: e.method,
+          headers: { 'Content-Type': 'application/json' },
+          body: e.body,
+          cache: 'no-store',
+        })
+        if (r.ok) {
+          const data = (await r.json().catch(() => ({}))) as MutationResponse
+          get().absorb(data)
+          await outboxDelete(e.seq)
+          changed = true
+        } else if (r.status >= 400 && r.status < 500) {
+          // the server understood and refused — retrying never helps
+          await outboxDelete(e.seq)
+          changed = true
+          get().showToast('A queued entry was rejected by the server and dropped.')
+        } else {
+          const attempts = e.attempts + 1
+          await outboxBumpAttempts(e.seq, attempts)
+          if (attempts >= 5) get().showToast('1 entry needs attention — it will keep retrying.')
+          break // stop the drain on the first server-side hiccup
+        }
+      } catch {
+        break // still offline — try again on the next wake
+      }
+    }
+    if (changed) set({ pending: await outboxCount() })
   },
 
   async addTask(goalId, label, priority = 'normal', opts) {
-    const r = await api<{ ledger: Ledger }>('/api/tasks', {
+    const r = await api<MutationResponse>('/api/tasks', {
       method: 'POST',
       body: JSON.stringify({ goalId, label, priority, ...opts }),
     })
     if (!r.ok) { get().showToast(r.error); return }
-    set({ ledger: r.data.ledger })
+    get().absorb(r.data)
   },
 
   async updateTask(id, patch) {
@@ -365,16 +719,16 @@ export const useLedger = create<LedgerStore>((set, get) => ({
         set({ ledger: { ...led, tasks } })
       }
     }
-    const r = await api<{ ledger: Ledger }>(`/api/tasks/${id}`, {
+    const r = await api<MutationResponse>(`/api/tasks/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
     })
-    if (r.ok) set({ ledger: r.data.ledger })
+    if (r.ok) get().absorb(r.data)
   },
 
   async deleteTask(id) {
-    const r = await api<{ ledger: Ledger }>(`/api/tasks/${id}`, { method: 'DELETE' })
-    if (r.ok) set({ ledger: r.data.ledger })
+    const r = await api<MutationResponse>(`/api/tasks/${id}`, { method: 'DELETE' })
+    if (r.ok) get().absorb(r.data)
   },
 
   async updateGoal(id, patch) {
@@ -384,33 +738,33 @@ export const useLedger = create<LedgerStore>((set, get) => ({
       const goals = led.goals.map((g) => (g.id === id ? { ...g, ...patch } as typeof g : g))
       set({ ledger: { ...led, goals } })
     }
-    const r = await api<{ ledger: Ledger }>(`/api/goals/${id}`, {
+    const r = await api<MutationResponse>(`/api/goals/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
     })
-    if (r.ok) set({ ledger: r.data.ledger })
+    if (r.ok) get().absorb(r.data)
     else await get().refresh()
   },
 
   async addInboxItem(text) {
-    const r = await api<{ ledger: Ledger }>('/api/inbox', {
+    const r = await api<MutationResponse>('/api/inbox', {
       method: 'POST',
       body: JSON.stringify({ text }),
     })
     if (!r.ok) { get().showToast(r.error); return }
-    set({ ledger: r.data.ledger })
+    get().absorb(r.data)
   },
 
   async deleteInboxItem(id) {
-    const r = await api<{ ledger: Ledger }>(`/api/inbox/${id}`, { method: 'DELETE' })
-    if (r.ok) set({ ledger: r.data.ledger })
+    const r = await api<MutationResponse>(`/api/inbox/${id}`, { method: 'DELETE' })
+    if (r.ok) get().absorb(r.data)
   },
 
   async inboxToTask(id, goalId) {
     const led = get().ledger
     const item = led?.inbox.find((i) => i.id === id)
     if (!item) return
-    const created = await api<{ ledger: Ledger }>('/api/tasks', {
+    const created = await api<MutationResponse>('/api/tasks', {
       method: 'POST',
       body: JSON.stringify({ goalId, label: item.text, priority: 'normal' }),
     })
@@ -459,31 +813,52 @@ export const useLedger = create<LedgerStore>((set, get) => ({
   },
 
   async addImportantDate(label, date, type) {
-    const r = await api<{ ledger: Ledger }>('/api/important-dates', {
+    const r = await api<MutationResponse>('/api/important-dates', {
       method: 'POST',
       body: JSON.stringify({ label, date, type }),
     })
     if (!r.ok) { get().showToast(r.error); return false }
-    set({ ledger: r.data.ledger })
+    get().absorb(r.data)
     return true
   },
 
-  /** v11: create a goal (fresh accounts start with none). */
+  /** P2-3: the wrong date the LLM parsed can now be fixed in place. */
+  async updateImportantDate(id, patch) {
+    const led = get().ledger
+    if (led) {
+      const importantDates = led.importantDates.map((d) => (d.id === id ? { ...d, ...patch } : d))
+      set({ ledger: { ...led, importantDates } })
+    }
+    const r = await api<MutationResponse>(`/api/important-dates/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    })
+    if (r.ok) get().absorb(r.data)
+    else get().showToast(r.error)
+  },
+
+  async deleteImportantDate(id) {
+    const r = await api<MutationResponse>(`/api/important-dates/${id}`, { method: 'DELETE' })
+    if (r.ok) get().absorb(r.data)
+    else get().showToast(r.error)
+  },
+
+  /** v11: create a goal — or a hobby (P2-2); fresh accounts start with none. */
   async addGoal(name, opts) {
-    const r = await api<{ ledger: Ledger }>('/api/goals', {
+    const r = await api<MutationResponse>('/api/goals', {
       method: 'POST',
       body: JSON.stringify({ name, ...opts }),
     })
     if (!r.ok) { get().showToast(r.error); return false }
-    set({ ledger: r.data.ledger })
+    get().absorb(r.data)
     return true
   },
 
   /** v10.5: delete a goal (its tasks cascade server-side). */
   async deleteGoal(id) {
-    const r = await api<{ ledger: Ledger }>(`/api/goals/${id}`, { method: 'DELETE' })
+    const r = await api<MutationResponse>(`/api/goals/${id}`, { method: 'DELETE' })
     if (!r.ok) { get().showToast(r.error); return }
-    set({ ledger: r.data.ledger })
+    get().absorb(r.data)
     get().showToast('Goal removed ✓')
   },
 
@@ -498,12 +873,12 @@ export const useLedger = create<LedgerStore>((set, get) => ({
 
   /** v11: create a habit. */
   async addHabit(name, targetPerWeek) {
-    const r = await api<{ ledger: Ledger }>('/api/habits', {
+    const r = await api<MutationResponse>('/api/habits', {
       method: 'POST',
       body: JSON.stringify({ name, targetPerWeek }),
     })
     if (!r.ok) { get().showToast(r.error); return false }
-    set({ ledger: r.data.ledger })
+    get().absorb(r.data)
     return true
   },
 
@@ -515,29 +890,29 @@ export const useLedger = create<LedgerStore>((set, get) => ({
       const habits = led.habits.map((h) => (h.id === id ? { ...h, ...patch } : h))
       set({ ledger: { ...led, habits } })
     }
-    const r = await api<{ ledger: Ledger }>(`/api/habits/${id}`, {
+    const r = await api<MutationResponse>(`/api/habits/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
     })
-    if (r.ok) set({ ledger: r.data.ledger })
+    if (r.ok) get().absorb(r.data)
     else get().showToast(r.error)
   },
 
   /** v10.5: permanently delete a habit and its check history. */
   async deleteHabit(id) {
-    const r = await api<{ ledger: Ledger }>(`/api/habits/${id}`, { method: 'DELETE' })
+    const r = await api<MutationResponse>(`/api/habits/${id}`, { method: 'DELETE' })
     if (!r.ok) { get().showToast(r.error); return }
-    set({ ledger: r.data.ledger })
+    get().absorb(r.data)
     get().showToast('Habit deleted ✓')
   },
 
   async userAction(name, action) {
-    const r = await api<{ ledger: Ledger }>(`/api/users/${encodeURIComponent(name)}`, {
+    const r = await api<MutationResponse>(`/api/users/${encodeURIComponent(name)}`, {
       method: 'PATCH',
       body: JSON.stringify({ action }),
     })
     if (!r.ok) { get().showToast(r.error); return }
-    set({ ledger: r.data.ledger })
+    get().absorb(r.data)
     await get().fetchHousehold()
   },
 
@@ -551,11 +926,17 @@ export const useLedger = create<LedgerStore>((set, get) => ({
 
   /** v11: remove the signed-in account and all of its data, then sign out. */
   async deleteAccount() {
+    const uid = get().user?.id
     const r = await api<{ ok: boolean }>('/api/account/delete', { method: 'POST' })
     if (!r.ok) return r.error
+    clearCursor()
+    if (uid) void clearMirror(uid)
+    rememberUserId(null)
     set({
       user: null,
       ledger: null,
+      syncCursor: 0,
+      pending: 0,
       view: 'today',
       household: null,
       entryOpen: false,
@@ -600,8 +981,8 @@ export const useLedger = create<LedgerStore>((set, get) => ({
 
   async fetchLlmSettings() {
     // Try user settings first; if empty, fall back to system settings (admin sees both)
-    const r = await api<{ settings: LlmConfigClientT[] }>('/api/settings/llm/me')
-    if (r.ok) return r.data.settings
+    const r = await api<{ settings: LlmConfigClientT[]; usage?: LlmUsageT }>('/api/settings/llm/me')
+    if (r.ok) return { settings: r.data.settings, usage: r.data.usage }
     return null
   },
 

@@ -25,12 +25,16 @@ const spaceMono = Space_Mono({
 export const metadata: Metadata = {
   title: "Ledger",
   description: "One book for your time — speak your day, see where it goes, and know what deserves your energy.",
+  manifest: "/manifest.webmanifest",
+  icons: { icon: "/logo.svg", apple: "/logo.svg" },
+  appleWebApp: { capable: true, statusBarStyle: "default", title: "Ledger" },
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
+  themeColor: "#4C7D8C",
 };
 
 export default function RootLayout({

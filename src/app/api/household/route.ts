@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
-import { findAllUsersOrderedByCreatedAt, findActivitiesByUserAndDateRange, findLastActivityDateByUser } from '@/lib/neon-sql'
+import { findAllUsersOrderedByCreatedAt, householdAggregate } from '@/lib/neon-sql'
 import { d2s } from '@/lib/server/ledger'
 import type { HouseholdRow } from '@/lib/types'
 
@@ -8,7 +8,9 @@ export const dynamic = 'force-dynamic'
 
 /**
  * GET /api/household
- * v9: uses raw SQL.
+ * v9: raw SQL. P2-5: the per-user loop (N window fetches + N last-activity
+ * fetches) became ONE window query + ONE groupBy — two queries total,
+ * independent of household size. Payload shape identical.
  */
 export async function GET(req: NextRequest) {
   const me = await getSessionUser(req)
@@ -21,21 +23,21 @@ export async function GET(req: NextRequest) {
     const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - ((day + 6) % 7)))
     const sunday = new Date(monday.getTime() + 6 * 86400000)
 
-    const users = await findAllUsersOrderedByCreatedAt()
-    const rows: HouseholdRow[] = []
-    for (const u of users) {
-      const acts = await findActivitiesByUserAndDateRange(u.id, monday, sunday)
-      const hours = acts.reduce((s, a) => s + a.hours, 0)
-      const days = new Set(acts.filter((a) => a.hours > 0).map((a) => d2s(a.date))).size
-      const lastDay = await findLastActivityDateByUser(u.id)
-      rows.push({
+    const [users, agg] = await Promise.all([
+      findAllUsersOrderedByCreatedAt(),
+      householdAggregate(monday, sunday),
+    ])
+    const byUser = new Map(agg.map((a) => [a.userId, a]))
+    const rows: HouseholdRow[] = users.map((u) => {
+      const a = byUser.get(u.id)
+      return {
         name: u.name,
         role: u.role === 'admin' ? 'admin' : 'member',
-        hoursThisWeek: +hours.toFixed(1),
-        daysThisWeek: days,
-        updated: lastDay ? d2s(lastDay) : null,
-      })
-    }
+        hoursThisWeek: a?.hoursThisWeek ?? 0,
+        daysThisWeek: a?.daysThisWeek ?? 0,
+        updated: a?.lastDay ? d2s(a.lastDay) : null,
+      }
+    })
     return Response.json({ household: rows })
   } catch (err) {
     console.error('household error:', err)

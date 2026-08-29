@@ -26,6 +26,15 @@ function Card({ task, goalId, goalName }: { task: { id: string; label: string; s
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: task.id })
   const cat = goalCat(goalId)
   const idle = daysSince(task.lastTouched)
+  /* P2-3: task label edit — the audit's "card edit-in-place" */
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(task.label)
+
+  function saveLabel() {
+    const v = draft.trim()
+    if (v && v !== task.label) updateTask(task.id, { label: v })
+    setEditing(false)
+  }
 
   return (
     <div
@@ -36,8 +45,35 @@ function Card({ task, goalId, goalName }: { task: { id: string; label: string; s
       style={{ touchAction: 'none' }}
     >
       <div className="k-top">
-        <span className="k-label">{task.label}</span>
+        {editing ? (
+          <input
+            autoFocus
+            type="text"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') saveLabel()
+              if (e.key === 'Escape') { setEditing(false); setDraft(task.label) }
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onBlur={saveLabel}
+            style={{ flex: 1, fontSize: '.86rem', padding: '2px 6px' }}
+            aria-label="Edit card label"
+          />
+        ) : (
+          <span className="k-label">{task.label}</span>
+        )}
         <span className="k-actions">
+          {!editing && (
+            <button
+              className="icon-btn"
+              onClick={(e) => { e.stopPropagation(); setDraft(task.label); setEditing(true) }}
+              title="Edit label"
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <I name="pencil" />
+            </button>
+          )}
           <button
             className="icon-btn"
             onClick={(e) => { e.stopPropagation(); updateTask(task.id, { status: STATUS_ORDER[(STATUS_ORDER.indexOf(task.status as TaskStatus) + 1) % 3] }) }}

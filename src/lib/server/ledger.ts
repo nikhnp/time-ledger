@@ -8,9 +8,14 @@ import {
   upsertDayHabit,
   upsertDayMetric,
   createNote,
+  findActivityByUserAndClientId,
+  findNoteByUserAndClientId,
+  logChanges,
+  type Client,
 } from '@/lib/neon-sql'
 import { db } from '@/lib/db'
 import { generateId } from '@/lib/server/cuid'
+import { normalizeActivityTimes, cleanLabel } from '@/lib/server/validate'
 import type { MergeDelta, MergeResult } from '@/lib/types'
 
 /* ---------- date helpers (single source: @/lib/dates — P1-5) ----------
@@ -36,7 +41,7 @@ export async function applyMergeDelta(
   opts?: { today?: string },
 ): Promise<MergeResult> {
   const skipped: string[] = []
-  const counts = { activities: 0, habits: 0, metrics: 0, notes: 0, highlight: 0, checkIn: 0 }
+  const counts = { activities: 0, habits: 0, metrics: 0, notes: 0, highlight: 0, checkIn: 0, dates: 0 }
 
   // P1-5: callers that know the user's zone pass it via opts.today so an
   // omitted date lands on the user's local day, not UTC's.
@@ -60,7 +65,7 @@ export async function applyMergeDelta(
   const metrics = await findMetricsByUser(userId)
 
   /* validate activities */
-  const activities: Array<{ goalId: string | null; hours: number; start: string | null; end: string | null; label: string | null }> = []
+  const activities: Array<{ goalId: string | null; hours: number; start: string | null; end: string | null; label: string | null; clientId: string | null }> = []
   for (const [i, a] of (raw.activities ?? []).entries()) {
     if (!a || typeof a !== 'object') { skipped.push(`activity ${i + 1} — unreadable`); continue }
     const g = fuzzyGoal(a.goalId)
@@ -68,18 +73,15 @@ export async function applyMergeDelta(
       skipped.push(`activity "${String(a.label ?? a.goalId).slice(0, 40)}" — unknown goal (have: ${goals.map((x) => x.id).join(', ')})`)
       continue
     }
-    let start = validTimeStr(a.start) ? a.start : null
-    let end = validTimeStr(a.end) ? a.end : null
-    let hours = Number(a.hours)
-    if (start && end) {
-      const mins = Number(end.slice(0, 2)) * 60 + Number(end.slice(3)) - (Number(start.slice(0, 2)) * 60 + Number(start.slice(3)))
-      if (mins <= 0) { end = null } else { hours = +(mins / 60).toFixed(2) }
-    }
-    if (!(hours > 0 && hours <= 24)) hours = hours > 0 ? Math.min(24, hours) : 0.5
+    const t = normalizeActivityTimes(a)
     activities.push({
-      goalId: g ? g.id : null, hours,
-      start, end,
-      label: typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 80) : null,
+      goalId: g ? g.id : null,
+      hours: t.hours,
+      start: t.start,
+      end: t.end,
+      label: cleanLabel(a.label),
+      // P2-10: idempotency key — a replayed capture upserts instead of appending
+      clientId: typeof a.clientId === 'string' && a.clientId.trim() ? a.clientId.trim().slice(0, 64) : null,
     })
   }
 
@@ -110,6 +112,21 @@ export async function applyMergeDelta(
       ? { question: String(raw.checkIn.question ?? 'What mattered today?').slice(0, 120), answer: String(raw.checkIn.answer).slice(0, 200) }
       : null
 
+  /* P2-9: dated items land on THEIR day ("deadline after exactly a week"),
+   * not today's notes. Validated with the same discipline as the route. */
+  const dateRows: Array<{ id: string; label: string; date: Date; type: string }> = []
+  for (const [i, d] of (raw.dates ?? []).entries()) {
+    if (!d || typeof d !== 'object') continue
+    const label = cleanLabel(d.label, 120)
+    if (!label || !validDateStr(d.date)) {
+      skipped.push(`date ${i + 1} — needs a label and a real date`)
+      continue
+    }
+    const type = ['deadline', 'birthday', 'reminder', 'event'].includes(String(d.type)) ? String(d.type) : 'event'
+    dateRows.push({ id: generateId(), label, date: new Date(d.date + 'T00:00:00Z'), type })
+  }
+  if (dateRows.length) counts.dates = dateRows.length
+
   const patch: { highlight?: string | null; checkIn?: object | null } = {}
   if (highlight) { patch.highlight = highlight; counts.highlight = 1 }
   if (checkIn) { patch.checkIn = checkIn; counts.checkIn = 1 }
@@ -119,6 +136,9 @@ export async function applyMergeDelta(
 
     if (activities.length) {
       for (const a of activities) {
+        /* P2-10: a replayed capture (offline outbox) must not double-write.
+         * Same (userId, clientId) already in the book → skip silently. */
+        if (a.clientId && (await findActivityByUserAndClientId(userId, a.clientId))) continue
         await createActivity(
           {
             id: generateId(),
@@ -129,6 +149,7 @@ export async function applyMergeDelta(
             start: a.start,
             end: a.end,
             label: a.label,
+            clientId: a.clientId,
           },
           tx,
         )
@@ -146,14 +167,32 @@ export async function applyMergeDelta(
       counts.metrics++
     }
 
+    /* P2-10: newNotes may carry a clientId per note ({ text, clientId }). */
     const newNotes = (raw.newNotes ?? [])
-      .map((n) => (typeof n === 'string' ? n.trim().slice(0, 300) : ''))
-      .filter(Boolean)
+      .map((n) => {
+        if (typeof n === 'string') return { text: n.trim().slice(0, 300), clientId: null as string | null }
+        const text = String(n?.text ?? '').trim().slice(0, 300)
+        const clientId = n && typeof n === 'object' && typeof n.clientId === 'string' && n.clientId.trim() ? n.clientId.trim().slice(0, 64) : null
+        return { text, clientId }
+      })
+      .filter((n) => n.text)
     if (newNotes.length) {
-      for (const text of newNotes) {
-        await createNote({ id: generateId(), userId, date: dayDate, text }, tx)
+      for (const n of newNotes) {
+        if (n.clientId && (await findNoteByUserAndClientId(userId, n.clientId))) continue
+        await createNote({ id: generateId(), userId, date: dayDate, text: n.text }, tx)
       }
       counts.notes = newNotes.length
+    }
+
+    if (dateRows.length) {
+      for (const d of dateRows) {
+        await tx.importantDate.create({ data: { ...d, userId, repeatsAnnually: false } })
+      }
+      await logChanges(
+        tx,
+        userId,
+        dateRows.map((d) => ({ entity: 'importantDate' as const, entityId: d.id })),
+      )
     }
   })
 

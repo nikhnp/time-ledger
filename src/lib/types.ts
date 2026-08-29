@@ -33,6 +33,7 @@ export interface GoalT {
   deadline: string | null
   weeklyTargetHours: number
   color: string | null
+  kind: 'goal' | 'hobby' // P2-2: pursuits
   milestones: Milestone[]
 }
 
@@ -75,10 +76,18 @@ export interface CheckIn {
   answer: string
 }
 
+/** P2-4: one intent for tomorrow (written the evening before). */
+export interface DayPlanEntry {
+  goalId: string | null
+  hours: number
+  note?: string
+}
+
 export interface DayT {
   date: string
   highlight: string | null
   checkIn: CheckIn | null
+  plan: DayPlanEntry[] | null // P2-4: tomorrow's plan (next-morning banner)
   activities: ActivityT[]
   habits: Record<string, boolean>
   metrics: Record<string, number>
@@ -200,6 +209,14 @@ export interface LlmConfigClientT {
   isSystem: boolean
 }
 
+/* ---------- P3-2: LLM usage (Settings panel) ---------- */
+
+export interface LlmUsageT {
+  todayTokens: number
+  limit: number
+  monthByRoute: Array<{ route: string; tokens: number }>
+}
+
 /* The merge delta — what Record/Paste/Manual/Timer/LLM all produce */
 export interface DeltaActivity {
   goalId?: string | null
@@ -207,6 +224,17 @@ export interface DeltaActivity {
   start?: string | null
   end?: string | null
   label?: string | null
+  /** P2-10: idempotency key — a replayed capture upserts instead of appending. */
+  clientId?: string
+}
+
+/** P2-9: a dated item extracted from capture ("deadline after exactly a week"). */
+export interface DeltaDate {
+  label: string
+  date: string // YYYY-MM-DD, resolved against the user's timezone
+  type: 'deadline' | 'birthday' | 'reminder' | 'event'
+  /** P2-10: idempotency key (notes-style dedupe uses text+date matching). */
+  clientId?: string
 }
 
 export interface MergeDelta {
@@ -216,10 +244,46 @@ export interface MergeDelta {
   activities?: DeltaActivity[]
   habits?: Array<{ habitId: string; done: boolean }>
   metrics?: Array<{ metricId: string; value: number }>
-  newNotes?: string[]
+  newNotes?: Array<string | { text: string; clientId?: string }>
+  dates?: DeltaDate[] // P2-9: dated items land on their day, not today's notes
 }
 
 export interface MergeResult {
-  counts: { activities: number; habits: number; metrics: number; notes: number; highlight: number; checkIn: number }
+  counts: { activities: number; habits: number; metrics: number; notes: number; highlight: number; checkIn: number; dates?: number }
   skipped: string[]
+}
+
+/* ---------- P2-1: delta sync ---------- */
+
+/** A slice of the Ledger touched by a mutation (server sends only these). */
+export type LedgerPatch = {
+  goals?: GoalT[]
+  tasks?: TaskT[]
+  habits?: HabitT[]
+  metrics?: MetricT[]
+  importantDates?: ImportantDateT[]
+  notes?: NoteT[]
+  inbox?: InboxItemT[]
+  /** fully re-folded DayT rows — replace by date */
+  days?: DayT[]
+}
+
+/** Entity ids removed server-side (drop them from the local ledger). */
+export type LedgerDeleted = {
+  goals?: string[]
+  tasks?: string[]
+  habits?: string[]
+  metrics?: string[]
+  importantDates?: string[]
+  notes?: string[]
+  inbox?: string[]
+}
+
+/** What every mutation responds with now: a small patch (+ cursor), or a
+ * full ledger for boot/gap-fallback flows. */
+export interface MutationResponse {
+  cursor?: number // ChangeLog high-water mark — echo back as ?since= next poll
+  patch?: LedgerPatch
+  deleted?: LedgerDeleted
+  ledger?: Ledger // present only on boot/full-sync fallback
 }

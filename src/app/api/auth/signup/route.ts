@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server'
-import { createUser, findUserByName, countUsers, createSessionRow, assembleLedgerRaw, createGoal, createHabit, updateUser } from '@/lib/neon-sql'
+import { createUser, findUserByName, countUsers, createSessionRow, assembleLedgerRaw, createGoal, createHabit, updateUser, maxChangeId } from '@/lib/neon-sql'
 import { hashPassword, sessionCookieHeader, generateSessionToken, jsonError } from '@/lib/server/auth'
 import { limit, clientIp, POLICY } from '@/lib/server/rate-limit'
 import { generateId } from '@/lib/server/cuid'
@@ -92,13 +92,14 @@ export async function POST(req: NextRequest) {
       } catch { /* unknown zone — ignore */ }
     }
 
-    // Return REAL ledger (v9 — assembleLedger now works)
-    const ledger = await assembleLedgerRaw(user.id)
+    // Return REAL ledger (v9 — assembleLedger now works; P2-1 adds the cursor)
+    const [ledger, cursor] = await Promise.all([assembleLedgerRaw(user.id), maxChangeId()])
 
     return new Response(
       JSON.stringify({
         user: { id: user.id, name: user.name, role: user.role },
         ledger,
+        cursor,
       }),
       {
         status: 200,

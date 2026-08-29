@@ -1,13 +1,13 @@
 import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
-import { findTaskByUserAndId, findGoalByUserAndId, updateTask, deleteTask, assembleLedgerRaw } from '@/lib/neon-sql'
+import { findTaskByUserAndId, findGoalByUserAndId, updateTask, deleteTask, maxChangeId, respondMutation } from '@/lib/neon-sql'
 
 export const dynamic = 'force-dynamic'
 
 /**
  * PATCH /api/tasks/[id]
  * DELETE /api/tasks/[id]
- * v9: uses raw SQL.
+ * P2-1: responds with a per-entity patch + cursor instead of the full ledger.
  */
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getSessionUser(req)
@@ -40,8 +40,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     patch.goalId = body.goalId
   }
 
+  const sinceId = await maxChangeId()
   await updateTask(task.id, patch)
-  return Response.json({ ledger: await assembleLedgerRaw(user.id) })
+  return respondMutation(user.id, sinceId)
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -50,6 +51,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const { id } = await params
   const task = await findTaskByUserAndId(user.id, id)
   if (!task) return jsonError(404, 'task not found')
+  const sinceId = await maxChangeId()
   await deleteTask(task.id)
-  return Response.json({ ledger: await assembleLedgerRaw(user.id) })
+  return respondMutation(user.id, sinceId)
 }

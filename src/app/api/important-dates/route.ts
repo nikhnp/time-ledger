@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
-import { createImportantDate, assembleLedgerRaw } from '@/lib/neon-sql'
+import { createImportantDate, maxChangeId, respondMutation } from '@/lib/neon-sql'
 import { validDateStr } from '@/lib/server/ledger'
 import { generateId } from '@/lib/server/cuid'
 
@@ -19,6 +19,7 @@ export async function POST(req: NextRequest) {
   if (!label) return jsonError(400, 'Give it a label.')
   if (!validDateStr(body.date)) return jsonError(400, 'Need a real date (YYYY-MM-DD).')
   const type = ['deadline', 'birthday', 'reminder', 'event'].includes(String(body.type)) ? String(body.type) : 'event'
+  const sinceId = await maxChangeId()
   await createImportantDate({
     id: generateId(),
     userId: user.id,
@@ -26,5 +27,5 @@ export async function POST(req: NextRequest) {
     date: new Date(body.date + 'T00:00:00Z'),
     type,
   })
-  return Response.json({ ledger: await assembleLedgerRaw(user.id) })
+  return respondMutation(user.id, sinceId)
 }

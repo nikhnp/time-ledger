@@ -1,12 +1,12 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useLedger } from '@/store/useLedger'
 import { I } from '@/components/Icon'
 import { RoughBtn } from '@/components/rough/controls'
 import { Stamp, ViewHead, EmptyNote } from '@/components/bits'
 import { RoughTrack } from '@/components/rough/controls'
-import { goalCurrent } from '@/lib/derivations'
+import { goalCurrent, goalsOf, hobbiesOf, weekHoursOf } from '@/lib/derivations'
 import { goalCat } from '@/lib/colors'
 import { daysUntil } from '@/lib/dates'
 
@@ -23,6 +23,12 @@ export default function GoalsView() {
   const [hoursInput, setHoursInput] = useState('1')
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
+  /* P2-2: pursuits — two tabs over one Goal store */
+  const [tab, setTab] = useState<'goals' | 'hobbies'>('goals')
+  const goals = useMemo(() => goalsOf(ledger), [ledger])
+  const hobbies = useMemo(() => hobbiesOf(ledger), [ledger])
+  const shown = tab === 'goals' ? goals : hobbies
+
   /* new-goal form */
   const [newName, setNewName] = useState('')
   const [newTarget, setNewTarget] = useState('30')
@@ -37,6 +43,7 @@ export default function GoalsView() {
     const ok = await addGoal(name, {
       target: Number(newTarget) || 30,
       weeklyTargetHours: Number(newWeekly) || 8,
+      kind: tab === 'hobbies' ? 'hobby' : 'goal', // the tab decides what you're creating
     })
     setCreating(false)
     if (ok) {
@@ -50,9 +57,19 @@ export default function GoalsView() {
     <>
       <ViewHead title="Goals" sub="the long game — milestones are clickable" />
 
+      {/* P2-2: pursuits tabs — hobbies live beside goals, not in a silo */}
+      <div className="segmented" style={{ marginBottom: 14 }}>
+        <button className={`seg-btn${tab === 'goals' ? ' active' : ''}`} onClick={() => setTab('goals')} aria-pressed={tab === 'goals'}>
+          <I name="target" /> Goals ({goals.length})
+        </button>
+        <button className={`seg-btn${tab === 'hobbies' ? ' active' : ''}`} onClick={() => setTab('hobbies')} aria-pressed={tab === 'hobbies'}>
+          <I name="spark" /> Hobbies ({hobbies.length})
+        </button>
+      </div>
+
       {/* v11: create a goal — fresh accounts start with an empty book */}
       <div className="card">
-        <Stamp icon="plus">Add a goal</Stamp>
+        <Stamp icon="plus">{tab === 'goals' ? 'Add a goal' : 'Add a hobby'}</Stamp>
         <form onSubmit={submitGoal} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <label style={{ flex: 2, minWidth: 160, fontSize: '.74rem', fontWeight: 600, color: 'var(--ink-soft)', display: 'flex', flexDirection: 'column', gap: 5 }}>
             Name
@@ -73,14 +90,23 @@ export default function GoalsView() {
       </div>
 
       <div className="card">
-        <Stamp icon="target">Goals</Stamp>
-        {ledger.goals.length === 0 && <EmptyNote>No goals yet — add your first above.</EmptyNote>}
+        <Stamp icon="target">{tab === 'goals' ? 'Goals' : 'Hobbies'}</Stamp>
+        {shown.length === 0 && (
+          <EmptyNote>
+            {tab === 'goals'
+              ? 'No goals yet — add your first above.'
+              : 'No hobbies yet — a hobby is a pursuit with weekly hours and no deadline pressure. Add one above.'}
+          </EmptyNote>
+        )}
         <div className="goal-grid">
-          {ledger.goals.map((g) => {
+          {shown.map((g) => {
             const cat = goalCat(g.id, g.color)
             const cur = goalCurrent(ledger, g.id)
+            const wk = weekHoursOf(ledger, g.id)
             const du = daysUntil(g.deadline)
-            const dl = du === null ? 'no deadline' : du >= 0 ? `${du}d left` : `${Math.abs(du)}d overdue`
+            const dl = g.kind === 'hobby'
+              ? `${wk.toFixed(1)}/${g.weeklyTargetHours}h this week`
+              : du === null ? 'no deadline' : du >= 0 ? `${du}d left` : `${Math.abs(du)}d overdue`
             return (
               <div className="goal-card" style={{ borderLeft: `3px solid ${cat.hex}` }} key={g.id}>
                 <h4>{g.name}</h4>

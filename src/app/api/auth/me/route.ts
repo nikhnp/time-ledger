@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
-import { assembleLedgerRaw } from '@/lib/neon-sql'
+import { assembleLedgerRaw, maxChangeId } from '@/lib/neon-sql'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,8 +12,8 @@ export async function GET(req: NextRequest) {
   const user = await getSessionUser(req)
   if (!user) return jsonError(401, 'not logged in')
   try {
-    const ledger = await assembleLedgerRaw(user.id)
-    return Response.json({ user, ledger })
+    const [ledger, cursor] = await Promise.all([assembleLedgerRaw(user.id), maxChangeId()])
+    return Response.json({ user, ledger, cursor })
   } catch (err) {
     console.error('me error:', err)
     const raw = err instanceof Error ? err.message : String(err)

@@ -1,5 +1,5 @@
 /* Derivations — every view is a pure function of the ledger. Ported from the prototype's core.js. */
-import type { Ledger, DayT, TaskT, GoalT } from './types'
+import type { Ledger, DayT, TaskT, GoalT, DayPlanEntry } from './types'
 import { isoLocal, isoDaysAgo, isoMonthOf, s2d, d2s, todayStr, daysUntil, daysSince, currentWeekDates } from './dates'
 import { STALE_DAYS } from './colors'
 
@@ -96,15 +96,17 @@ export interface DeadlineItem {
   label: string
   date: string
   du: number
+  /** P2-3: importantDate rows are editable in place; goal deadlines are not. */
+  id?: string
+  source: 'goal' | 'date'
 }
 
 export function upcomingDeadlines(ledger: Ledger): DeadlineItem[] {
-  const items: Array<{ label: string; date: string }> = []
-  ledger.goals.forEach((g) => { if (g.deadline) items.push({ label: g.name, date: g.deadline }) })
-  ledger.importantDates.forEach((d) => items.push({ label: d.label, date: d.date }))
+  const items: DeadlineItem[] = []
+  ledger.goals.forEach((g) => { if (g.deadline) items.push({ label: g.name, date: g.deadline, du: 0, source: 'goal' }) })
+  ledger.importantDates.forEach((d) => items.push({ label: d.label, date: d.date, du: 0, id: d.id, source: 'date' }))
   return items
     .map((i) => ({ ...i, du: daysUntil(i.date) ?? 0 }))
-    .filter((i) => i.du !== null)
     .sort((a, b) => a.du - b.du)
     .slice(0, 6)
 }
@@ -259,6 +261,27 @@ export function monthLong(s: string): string {
   return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' })
 }
 
+/* ---------- P2-2: pursuits (goals vs hobbies) ---------- */
+
+export function goalsOf(ledger: Ledger): GoalT[] {
+  return ledger.goals.filter((g) => (g.kind ?? 'goal') === 'goal')
+}
+
+export function hobbiesOf(ledger: Ledger): GoalT[] {
+  return ledger.goals.filter((g) => g.kind === 'hobby')
+}
+
+/** This week's logged hours for one pursuit (hobby strip / goals tabs). */
+export function weekHoursOf(ledger: Ledger, gid: string): number {
+  return goalWeekHours(ledger, gid)
+}
+
+/* ---------- P2-4: the plan (tomorrow's intents) ---------- */
+
+export function dayPlan(ledger: Ledger, date: string): DayPlanEntry[] {
+  return L.day(ledger, date)?.plan ?? []
+}
+
 /* ---------- tasks / board / matrix ---------- */
 
 export const STATUS_ORDER = ['todo', 'doing', 'done'] as const
@@ -311,17 +334,18 @@ export interface ValidatedDelta {
   date: string
   highlight?: string
   checkIn?: { question: string; answer: string }
-  activities: Array<{ goalId: string | null; hours: number; start?: string; end?: string; label?: string }>
+  activities: Array<{ goalId: string | null; hours: number; start?: string; end?: string; label?: string; clientId?: string }>
   habits: Array<{ habitId: string; done: boolean }>
   metrics: Array<{ metricId: string; value: number }>
-  newNotes: string[]
+  newNotes: Array<string | { text: string; clientId?: string }>
+  dates: Array<{ label: string; date: string; type: 'deadline' | 'birthday' | 'reminder' | 'event'; clientId?: string }>
 }
 
 export function validateDelta(ledger: Ledger, raw: Record<string, unknown>): { delta: ValidatedDelta; skipped: string[] } {
   const skipped: string[] = []
   const d: ValidatedDelta = {
     date: validDate(raw.date) ? (raw.date as string) : todayStr(),
-    activities: [], habits: [], metrics: [], newNotes: [],
+    activities: [], habits: [], metrics: [], newNotes: [], dates: [],
   }
 
   if (typeof raw.highlight === 'string' && raw.highlight.trim()) d.highlight = raw.highlight.trim().slice(0, 200)
@@ -376,8 +400,28 @@ export function validateDelta(ledger: Ledger, raw: Record<string, unknown>): { d
 
   const notes = Array.isArray(raw.newNotes) ? raw.newNotes : []
   notes.forEach((n) => {
-    const s = String(n ?? '').trim()
-    if (s) d.newNotes.push(s.slice(0, 300))
+    if (typeof n === 'string') {
+      const s = n.trim()
+      if (s) d.newNotes.push(s.slice(0, 300))
+    } else if (n && typeof n === 'object') {
+      const o = n as Record<string, unknown>
+      const s = String(o.text ?? '').trim()
+      if (s) d.newNotes.push({ text: s.slice(0, 300), ...(typeof o.clientId === 'string' ? { clientId: o.clientId } : {}) })
+    }
+  })
+
+  /* P2-9: dated items ("deadline after exactly a week" → that day) */
+  const dates = Array.isArray(raw.dates) ? raw.dates : []
+  dates.forEach((dt) => {
+    if (!dt || typeof dt !== 'object') { skipped.push('date — unreadable'); return }
+    const o = dt as Record<string, unknown>
+    const label = String(o.label ?? '').trim()
+    if (!label) { skipped.push('date — no label'); return }
+    if (!validDate(o.date)) { skipped.push(`date "${label.slice(0, 30)}" — not a real date`); return }
+    const type = ['deadline', 'birthday', 'reminder', 'event'].includes(String(o.type))
+      ? (String(o.type) as ValidatedDelta['dates'][number]['type'])
+      : 'event'
+    d.dates.push({ label: label.slice(0, 120), date: o.date as string, type })
   })
 
   return { delta: d, skipped }
