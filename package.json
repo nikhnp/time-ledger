@@ -1,6 +1,6 @@
 {
   "name": "ledger",
-  "version": "10.4.0-p1",
+  "version": "10.5.0-p2a",
   "private": true,
   "engines": {
     "node": ">=20.9"
@@ -39,5 +39,10 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^3"
+  },
+  "allowScripts": {
+    "prisma@6.19.3": true,
+    "esbuild@0.28.2": true,
+    "unrs-resolver@1.12.2": true
   }
 }

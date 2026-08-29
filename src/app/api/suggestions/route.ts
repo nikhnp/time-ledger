@@ -30,10 +30,10 @@ export async function GET(req: NextRequest) {
 
     // Build context about the day
     const todayHours = day ? day.activities.reduce((s, a) => s + a.hours, 0) : 0
-    const todayHabitsDone = day ? Object.values(day.habits).filter(Boolean).length : 0
-    const todayHabitsTotal = ledger.habits.length
-    const pendingTasks = ledger.goals.flatMap((g) => g.tasks).filter((t) => t.status !== 'done').length
-    const overdueTasks = ledger.goals.flatMap((g) => g.tasks).filter((t) => t.status !== 'done' && t.urgent).length
+    const todayHabitsDone = day ? Object.entries(day.habits).filter(([hid, done]) => done && !ledger.habits.find((h) => h.id === hid)?.archived).length : 0
+    const todayHabitsTotal = ledger.habits.filter((h) => !h.archived).length
+    const pendingTasks = ledger.tasks.filter((t) => t.status !== 'done').length
+    const overdueTasks = ledger.tasks.filter((t) => t.status !== 'done' && t.urgent).length
     const upcomingDeadlines = ledger.importantDates.filter((d) => {
       const days = (new Date(d.date).getTime() - new Date(today).getTime()) / 86400000
       return days >= 0 && days <= 7

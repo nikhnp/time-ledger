@@ -8,6 +8,7 @@ const ICONS: Record<string, string> = {
   gauge: '<path d="M4.5 19a8.5 8.5 0 1 1 15 0"/><path d="M12 14.5L15.5 9"/><circle cx="12" cy="14.5" r="1"/>',
   waves: '<path d="M2 12c2.2-3 4.3-3 6.5 0s4.3 3 6.5 0 4.3-3 6 0"/>',
   check: '<circle cx="12" cy="12" r="9"/><path d="M8.2 12.4l2.6 2.6 5-5.6"/>',
+  box: '<rect x="3.5" y="4" width="17" height="5" rx="1"/><path d="M5.5 9v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V9"/><path d="M10 13h4"/>',
   pie: '<circle cx="12" cy="12" r="9"/><path d="M12 3v9h9"/>',
   activity: '<path d="M2 12h4l3-8 5 16 3-8h5"/>',
   file: '<path d="M6 3h8.5L20 8.5V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v6h6"/><path d="M9 13h6M9 17h6"/>',

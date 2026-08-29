@@ -23,11 +23,15 @@ export function todayStr(): string {
  * Invalid/unknown zones fall back to UTC rather than throwing.
  */
 export function todayIn(tz: string | null | undefined, now: Date = new Date()): string {
-  if (!tz) return todayStr()
+  /* v10.5.1: the fallback paths used to delegate to todayStr(), which reads the
+   * CURRENT clock — silently ignoring the `now` argument. That broke the
+   * function contract (a pinned test caught it across a UTC-midnight run).
+   * Now every path derives from `now`: null/invalid zone → UTC date of `now`. */
+  if (!tz) return now.toISOString().slice(0, 10)
   try {
     return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(now)
   } catch {
-    return todayStr()
+    return now.toISOString().slice(0, 10)
   }
 }
 

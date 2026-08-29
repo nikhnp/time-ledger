@@ -138,7 +138,7 @@ model Goal {
 model Task {
   id          String   @id @default(cuid())
   userId      String
-  goalId      String
+  goalId      String? // null = unassigned task (not tied to a goal)
   label       String
   status      String   @default("todo") // 'todo' | 'doing' | 'done'
   priority    String   @default("normal") // 'normal' | 'high'
@@ -147,8 +147,8 @@ model Task {
   lastTouched DateTime @default(now())
   createdAt   DateTime @default(now())
 
-  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  goal Goal  @relation(fields: [goalId, userId], references: [id, userId], onDelete: Cascade)
+  user User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  goal Goal?  @relation(fields: [goalId, userId], references: [id, userId], onDelete: Cascade)
 
   @@index([userId, status])
 }
@@ -160,6 +160,7 @@ model Habit {
   targetPerWeek Int     @default(7)
   color         String?
   sortOrder     Int     @default(0)
+  archived      Boolean @default(false) // hidden from active lists, data kept
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

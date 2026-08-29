@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { getSessionUser, jsonError } from '@/lib/server/auth'
-import { findGoalByUserAndId, updateGoal, assembleLedgerRaw } from '@/lib/neon-sql'
+import { findGoalByUserAndId, updateGoal, deleteGoal, assembleLedgerRaw } from '@/lib/neon-sql'
 import { validDateStr } from '@/lib/server/ledger'
 import type { Milestone } from '@/lib/types'
 
@@ -42,5 +42,20 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   }
 
   await updateGoal(user.id, id, patch)
+  return Response.json({ ledger: await assembleLedgerRaw(user.id) })
+}
+
+/**
+ * DELETE /api/goals/[id] — v10.5
+ * Removes the goal; its tasks cascade via FK. Activities keep their historical
+ * goalId (activity.goalId is a loose reference, not an FK) so past hours stay.
+ */
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const user = await getSessionUser(req)
+  if (!user) return jsonError(401, 'not logged in')
+  const { id } = await params
+  if (!(await findGoalByUserAndId(user.id, id))) return jsonError(404, 'goal not found')
+
+  await deleteGoal(user.id, id)
   return Response.json({ ledger: await assembleLedgerRaw(user.id) })
 }

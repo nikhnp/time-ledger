@@ -6,7 +6,7 @@ import { STALE_DAYS } from './colors'
 export const L = {
   day: (ledger: Ledger, s: string): DayT | undefined => ledger.days.find((d) => d.date === s),
   goalName: (ledger: Ledger, gid: string | null): string => {
-    if (!gid) return 'Uncategorized'
+    if (!gid) return 'No goal'
     const g = ledger.goals.find((x) => x.id === gid)
     return g ? g.name : gid
   },
@@ -44,9 +44,9 @@ export function totalHoursAllTime(ledger: Ledger): number {
 
 export function tasksDoneThisWeek(ledger: Ledger): number {
   let n = 0
-  ledger.goals.forEach((g) => g.tasks.forEach((t) => {
+  ledger.tasks.forEach((t) => {
     if (t.status === 'done' && daysSince(t.lastTouched) <= 7) n++
-  }))
+  })
   return n
 }
 
@@ -70,7 +70,7 @@ export function habitWeekDots(ledger: Ledger, hid: string): boolean[] {
 }
 
 export interface PriorityTask {
-  goalId: string
+  goalId: string | null
   goalName: string
   task: TaskT
   idle: number
@@ -78,11 +78,11 @@ export interface PriorityTask {
 
 export function priorityTasks(ledger: Ledger): PriorityTask[] {
   const l: PriorityTask[] = []
-  ledger.goals.forEach((g) => g.tasks.forEach((t) => {
+  allTasks(ledger).forEach(({ goalId, goalName, task: t }) => {
     if (t.status === 'done') return
     const idle = daysSince(t.lastTouched)
-    if (t.priority === 'high' || idle >= STALE_DAYS) l.push({ goalId: g.id, goalName: g.name, task: t, idle })
-  }))
+    if (t.priority === 'high' || idle >= STALE_DAYS) l.push({ goalId, goalName, task: t, idle })
+  })
   l.sort((a, b) => {
     const ah = a.task.priority === 'high'
     const bh = b.task.priority === 'high'
@@ -179,6 +179,7 @@ export function getRecommendations(ledger: Ledger): Recommendation[] {
   }
 
   for (const h of ledger.habits) {
+    if (h.archived) continue
     const wk = habitWeekDots(ledger, h.id).filter(Boolean).length
     if (wk < h.targetPerWeek) {
       R.push({
@@ -272,15 +273,13 @@ export function quadrantOf(t: TaskT): Quadrant | null {
 }
 
 export interface TaskRef {
-  goalId: string
+  goalId: string | null
   goalName: string
   task: TaskT
 }
 
 export function allTasks(ledger: Ledger): TaskRef[] {
-  const l: TaskRef[] = []
-  ledger.goals.forEach((g) => g.tasks.forEach((t) => l.push({ goalId: g.id, goalName: g.name, task: t })))
-  return l
+  return ledger.tasks.map((t) => ({ goalId: t.goalId, goalName: L.goalName(ledger, t.goalId), task: t }))
 }
 
 export function fuzzyGoal(ledger: Ledger, raw: string | null | undefined): GoalT | null {

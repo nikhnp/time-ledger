@@ -9,6 +9,7 @@ import { useLedger } from '@/store/useLedger'
 import { I } from '@/components/Icon'
 import { RoughBtn } from '@/components/rough/controls'
 import StructuredPreview from '@/components/StructuredPreview'
+import SheetErrorBoundary from '@/components/SheetErrorBoundary'
 import { FocusTimer } from '@/components/FocusModal'
 import { Speech } from '@/lib/speech'
 import { LLM } from '@/lib/llm'
@@ -38,9 +39,15 @@ export default function EntrySheet() {
   const entryOpen = useLedger((s) => s.entryOpen)
 
   /* the inner sheet mounts fresh on every open — its recommendation fetch
-   * starts from clean state without sync setState inside an effect */
+   * starts from clean state without sync setState inside an effect.
+   * v10.5: an error boundary keeps a render crash from leaving a blank
+   * dark popup stuck on screen. */
   if (!entryOpen) return null
-  return <EntrySheetInner />
+  return (
+    <SheetErrorBoundary>
+      <EntrySheetInner />
+    </SheetErrorBoundary>
+  )
 }
 
 function EntrySheetInner() {

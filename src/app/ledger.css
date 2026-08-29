@@ -1882,3 +1882,64 @@ label { color: var(--ink-soft); }
   .st-app-row .st-app-bar { display: none; }
   .wrapped-stats { gap: 18px; }
 }
+
+/* ---------- v10.5: habit row tools, streak overflow fix, goal quick actions ---------- */
+.habit-row {
+  grid-template-columns: 34px minmax(0, 1fr) auto auto auto;
+  column-gap: 10px;
+}
+.habit-streak-badge {
+  max-width: 104px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+.habit-tools {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+}
+.habit-row:hover .habit-tools,
+.habit-row:focus-within .habit-tools { opacity: 1; }
+.habit-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.66rem;
+  color: var(--terracotta);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.goal-quick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 4px;
+}
+.goal-log-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.goal-log-row input[type="number"] { width: 68px; }
+.goal-deadline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.68rem;
+  color: var(--ink-soft);
+  font-family: var(--fm);
+}
+.goal-deadline input[type="date"] {
+  font-family: var(--fm);
+  font-size: 0.7rem;
+  padding: 3px 6px;
+}
+.inbox-row input[type="date"] {
+  font-family: var(--fm);
+  font-size: 0.74rem;
+  padding: 4px 6px;
+}

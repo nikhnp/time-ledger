@@ -16,7 +16,7 @@ export interface Milestone {
 
 export interface TaskT {
   id: string
-  goalId: string
+  goalId: string | null // null = unassigned (not tied to a goal)
   label: string
   status: TaskStatus
   priority: 'normal' | 'high'
@@ -34,7 +34,6 @@ export interface GoalT {
   weeklyTargetHours: number
   color: string | null
   milestones: Milestone[]
-  tasks: TaskT[]
 }
 
 export interface HabitT {
@@ -42,6 +41,7 @@ export interface HabitT {
   name: string
   targetPerWeek: number
   color: string | null
+  archived: boolean
 }
 
 export interface MetricT {
@@ -105,6 +105,7 @@ export interface Ledger {
   days: DayT[]
   notes: NoteT[]
   inbox: InboxItemT[]
+  tasks: TaskT[] // flat since v10.5 — tasks may be goal-less
 }
 
 export interface HouseholdRow {

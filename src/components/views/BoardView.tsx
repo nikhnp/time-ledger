@@ -20,7 +20,7 @@ const COLS: Array<{ id: TaskStatus; title: string }> = [
   { id: 'done', title: 'Done' },
 ]
 
-function Card({ task, goalId, goalName }: { task: { id: string; label: string; status: string; priority: string; lastTouched: string }; goalId: string; goalName: string }) {
+function Card({ task, goalId, goalName }: { task: { id: string; label: string; status: string; priority: string; lastTouched: string }; goalId: string | null; goalName: string }) {
   const updateTask = useLedger((s) => s.updateTask)
   const deleteTask = useLedger((s) => s.deleteTask)
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: task.id })
@@ -65,7 +65,7 @@ function Card({ task, goalId, goalName }: { task: { id: string; label: string; s
   )
 }
 
-function Column({ col, tasks }: { col: { id: TaskStatus; title: string }; tasks: Array<{ task: { id: string; label: string; status: string; priority: string; lastTouched: string }; goalId: string; goalName: string }> }) {
+function Column({ col, tasks }: { col: { id: TaskStatus; title: string }; tasks: Array<{ task: { id: string; label: string; status: string; priority: string; lastTouched: string }; goalId: string | null; goalName: string }> }) {
   const { setNodeRef, isOver } = useDroppable({ id: col.id })
   return (
     <div className={`board-col${isOver ? ' drag-over' : ''}`} ref={setNodeRef} data-col={col.id}>
@@ -84,6 +84,7 @@ export default function BoardView() {
   const [label, setLabel] = useState('')
   const [goalId, setGoalId] = useState(ledger.goals[0]?.id ?? '')
   const [priority, setPriority] = useState<'normal' | 'high'>('normal')
+  const [status, setStatus] = useState<TaskStatus>('todo')
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -96,21 +97,22 @@ export default function BoardView() {
     const id = String(e.active.id)
     const col = e.over?.id ? String(e.over.id) : null
     if (!col) return
-    const status = col as TaskStatus
+    const st = col as TaskStatus
     const ref = tasks.find((x) => x.task.id === id)
-    if (ref && ref.task.status !== status) useLedger.getState().updateTask(id, { status })
+    if (ref && ref.task.status !== st) useLedger.getState().updateTask(id, { status: st })
   }
 
   async function submit() {
     if (!label.trim()) { useLedger.getState().showToast('Give the card a name.'); return }
-    await addTask(goalId || ledger.goals[0].id, label.trim(), priority)
+    /* v10.5: goal is optional — empty goal select or "No goal" creates an unassigned card */
+    await addTask(goalId || null, label.trim(), priority, { status })
     setLabel('')
     useLedger.getState().showToast('Card added ✓')
   }
 
   return (
     <>
-      <ViewHead title="Board" sub="every card is a real task on a goal — drag or tap-cycle" />
+      <ViewHead title="Board" sub="every card is a real task — drag, tap-cycle, or pick a column below" />
       <div className="board-add">
         <input
           type="text"
@@ -120,7 +122,12 @@ export default function BoardView() {
           onKeyDown={(e) => { if (e.key === 'Enter') submit() }}
         />
         <select value={goalId} onChange={(e) => setGoalId(e.target.value)} aria-label="Goal">
+          {ledger.goals.length === 0 && <option value="">No goal — free card</option>}
           {ledger.goals.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          {ledger.goals.length > 0 && <option value="">No goal — free card</option>}
+        </select>
+        <select value={status} onChange={(e) => setStatus(e.target.value as TaskStatus)} aria-label="Column">
+          {COLS.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
         </select>
         <select value={priority} onChange={(e) => setPriority(e.target.value as 'normal' | 'high')} aria-label="Priority">
           <option value="normal">normal</option>
@@ -138,7 +145,7 @@ export default function BoardView() {
       </DndContext>
 
       <p className="chart-note" style={{ marginTop: 14 }}>
-        board state lives in the ledger — {tasks.filter((x) => x.task.status !== 'done').length} open tasks across {ledger.goals.length} goals · updated {todayStr()}
+        board state lives in the ledger — {tasks.filter((x) => x.task.status !== 'done').length} open tasks · updated {todayStr()}
       </p>
       <div style={{ display: 'none' }}><Stamp icon="columns">Board</Stamp></div>
     </>

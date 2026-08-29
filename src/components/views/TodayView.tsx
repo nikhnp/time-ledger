@@ -108,10 +108,10 @@ export default function TodayView() {
     const items: string[] = []
     if (day) {
       day.activities.forEach((a) => items.push(`${a.hours}h on ${ledger.goals.find((g) => g.id === a.goalId)?.name ?? 'something'}`))
-      ledger.goals.forEach((g) => g.tasks.forEach((tk) => {
+      ledger.tasks.forEach((tk) => {
         if (tk.status === 'done' && tk.lastTouched === t) items.push(`Finished "${tk.label}"`)
-      }))
-      ledger.habits.forEach((h) => { if (day.habits[h.id]) items.push(h.name) })
+      })
+      ledger.habits.forEach((h) => { if (!h.archived && day.habits[h.id]) items.push(h.name) })
     }
     return items.slice(0, 4)
   }, [day, ledger, t])
@@ -246,10 +246,10 @@ export default function TodayView() {
       {habitsOn && <ConsistencyHeatmap weeks={18} />}
 
       {/* quick toggle today's habits — kept for fast access */}
-      {habitsOn && ledger.habits.length > 0 && (
+      {habitsOn && ledger.habits.some((h) => !h.archived) && (
         <div className="card">
           <Stamp icon="check">Today&apos;s habits</Stamp>
-          {ledger.habits.map((h) => {
+          {ledger.habits.filter((h) => !h.archived).map((h) => {
             const hex = habitColor(h.id, h.color)
             const done = habitDoneOn(ledger, h.id, t)
             return (

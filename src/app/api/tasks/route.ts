@@ -8,29 +8,37 @@ export const dynamic = 'force-dynamic'
 
 /**
  * POST /api/tasks
- * v9: uses raw SQL.
+ * v10.5: goalId is optional (unassigned tasks allowed); callers may set the
+ * starting status and the urgent/important quadrant flags directly.
  */
 export async function POST(req: NextRequest) {
   const user = await getSessionUser(req)
   if (!user) return jsonError(401, 'not logged in')
-  let body: { goalId?: string; label?: string; priority?: string }
+  let body: { goalId?: string | null; label?: string; priority?: string; status?: string; urgent?: boolean; important?: boolean }
   try { body = await req.json() } catch { return jsonError(400, 'invalid JSON body') }
 
   const label = String(body.label ?? '').trim()
-  const goalId = String(body.goalId ?? '').trim()
   if (!label) return jsonError(400, 'Give the task a label.')
-  const goal = await findGoalByUserAndId(user.id, goalId)
-  if (!goal) return jsonError(404, 'unknown goal')
+
+  const rawGoal = typeof body.goalId === 'string' ? body.goalId.trim() : ''
+  let goalId: string | null = null
+  if (rawGoal) {
+    const goal = await findGoalByUserAndId(user.id, rawGoal)
+    if (!goal) return jsonError(404, 'unknown goal')
+    goalId = rawGoal
+  }
 
   const priority = body.priority === 'high' ? 'high' : 'normal'
+  const status = body.status === 'doing' || body.status === 'done' ? body.status : 'todo'
   await createTask({
     id: generateId(),
     userId: user.id,
     goalId,
     label: label.slice(0, 160),
     priority,
-    urgent: priority === 'high',
-    important: true,
+    status,
+    urgent: typeof body.urgent === 'boolean' ? body.urgent : priority === 'high',
+    important: typeof body.important === 'boolean' ? body.important : true,
     lastTouched: new Date(todayIn(user.tz) + 'T00:00:00Z'),
   })
   return Response.json({ ledger: await assembleLedgerRaw(user.id) })

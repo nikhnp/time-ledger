@@ -14,8 +14,14 @@ export default function GoalsView() {
   const ledger = useLedger((s) => s.ledger)!
   const updateGoal = useLedger((s) => s.updateGoal)
   const addGoal = useLedger((s) => s.addGoal)
+  const deleteGoal = useLedger((s) => s.deleteGoal)
+  const logGoalHours = useLedger((s) => s.logGoalHours)
   const [adding, setAdding] = useState<string | null>(null)
   const [msInput, setMsInput] = useState('')
+  /* v10.5: per-goal quick actions */
+  const [logging, setLogging] = useState<string | null>(null)
+  const [hoursInput, setHoursInput] = useState('1')
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
   /* new-goal form */
   const [newName, setNewName] = useState('')
@@ -85,6 +91,59 @@ export default function GoalsView() {
                 <div className="goal-meta">
                   <span>{cur.toFixed(1)} / {g.target} {g.unit}</span>
                   <span>{((cur / g.target) * 100).toFixed(0)}%</span>
+                </div>
+
+                {/* v10.5: quick-log hours + deadline + delete */}
+                <div className="goal-quick">
+                  {logging === g.id ? (
+                    <span className="goal-log-row">
+                      <input
+                        autoFocus
+                        type="number"
+                        min={0.25}
+                        step={0.25}
+                        value={hoursInput}
+                        onChange={(e) => setHoursInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            const h = parseFloat(hoursInput)
+                            if (h > 0) { logGoalHours(g.id, h); setLogging(null) }
+                          }
+                          if (e.key === 'Escape') setLogging(null)
+                        }}
+                        aria-label="Hours to log"
+                      />
+                      <RoughBtn className="btn-sm" onClick={() => { const h = parseFloat(hoursInput); if (h > 0) { logGoalHours(g.id, h); setLogging(null) } }}>Log</RoughBtn>
+                      <button className="icon-btn" title="Cancel" onClick={() => setLogging(null)}><I name="x" /></button>
+                    </span>
+                  ) : (
+                    <RoughBtn className="btn-sm" onClick={() => { setLogging(g.id); setHoursInput('1') }}>
+                      <I name="plus" /> Log hours
+                    </RoughBtn>
+                  )}
+                  <label className="goal-deadline" title="Deadline — shows up in Coming up on Today">
+                    by
+                    <input
+                      type="date"
+                      value={g.deadline ?? ''}
+                      onChange={(e) => updateGoal(g.id, { deadline: e.target.value || null })}
+                    />
+                  </label>
+                  {confirmDelete === g.id ? (
+                    <span className="habit-confirm">
+                      Delete goal + its tasks?
+                      <button className="icon-btn" title="Confirm delete" onClick={() => { deleteGoal(g.id); setConfirmDelete(null) }}>
+                        <I name="check" />
+                      </button>
+                      <button className="icon-btn" title="Keep it" onClick={() => setConfirmDelete(null)}>
+                        <I name="x" />
+                      </button>
+                    </span>
+                  ) : (
+                    <button className="icon-btn" title="Delete goal" onClick={() => setConfirmDelete(g.id)}>
+                      <I name="trash" />
+                    </button>
+                  )}
                 </div>
                 <div className="goal-ms">
                   {g.milestones.map((m, i) => (

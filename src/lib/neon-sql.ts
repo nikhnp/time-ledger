@@ -65,7 +65,7 @@ export interface GoalRow {
 export interface TaskRow {
   id: string
   userId: string
-  goalId: string
+  goalId: string | null
   label: string
   status: string
   priority: string
@@ -82,6 +82,7 @@ export interface HabitRow {
   targetPerWeek: number
   color: string | null
   sortOrder: number
+  archived: boolean
 }
 
 export interface MetricRow {
@@ -379,6 +380,11 @@ export async function findGoalsByUserWithTasks(userId: string): Promise<
   }))
 }
 
+/** v10.5: flat task list — tasks may be unassigned (goalId null). */
+export async function findTasksByUser(userId: string): Promise<TaskRow[]> {
+  return db.task.findMany({ where: { userId }, orderBy: { createdAt: 'asc' } })
+}
+
 export async function updateGoal(
   userId: string,
   id: string,
@@ -400,6 +406,39 @@ export async function updateGoal(
   if (patch.milestones !== undefined) data.milestones = JSON.stringify(patch.milestones)
   if (Object.keys(data).length === 0) return
   await db.goal.update({ where: { userId_id: { userId, id } }, data })
+}
+
+/** v10.5: delete a goal — its tasks cascade via FK onDelete: Cascade. */
+export async function deleteGoal(userId: string, id: string): Promise<void> {
+  await db.goal.delete({ where: { userId_id: { userId, id } } })
+}
+
+/** v10.5: patch a habit (rename, retarget, archive/unarchive). */
+export async function updateHabit(
+  userId: string,
+  id: string,
+  patch: {
+    name?: string
+    targetPerWeek?: number
+    archived?: boolean
+    color?: string | null
+    sortOrder?: number
+  },
+): Promise<void> {
+  const data: Record<string, unknown> = {}
+  if (patch.name !== undefined) data.name = patch.name
+  if (patch.targetPerWeek !== undefined) data.targetPerWeek = patch.targetPerWeek
+  if (patch.archived !== undefined) data.archived = patch.archived
+  if (patch.color !== undefined) data.color = patch.color
+  if (patch.sortOrder !== undefined) data.sortOrder = patch.sortOrder
+  if (Object.keys(data).length === 0) return
+  await db.habit.update({ where: { userId_id: { userId, id } }, data })
+}
+
+/** v10.5: delete a habit and its per-day check rows. */
+export async function deleteHabit(userId: string, id: string): Promise<void> {
+  await db.dayHabit.deleteMany({ where: { userId, habitId: id } })
+  await db.habit.delete({ where: { userId_id: { userId, id } } })
 }
 
 /** v11: create a goal row for a user (id is a human-friendly slug). */
@@ -465,7 +504,7 @@ export async function findTaskByUserAndId(
 export async function createTask(params: {
   id: string
   userId: string
-  goalId: string
+  goalId: string | null
   label: string
   status?: string
   priority?: string
@@ -496,7 +535,7 @@ export async function updateTask(
     priority?: string
     urgent?: boolean
     important?: boolean
-    goalId?: string
+    goalId?: string | null
     lastTouched?: Date
   },
 ): Promise<void> {
@@ -725,10 +764,10 @@ export async function createImportantDate(params: {
  * ============================================================ */
 
 export async function assembleLedgerRaw(userId: string): Promise<Ledger> {
-  const [user, goals, habits, metrics, importantDates, days, activities, dayHabits, dayMetrics, notes, inbox] =
+  const [user, goals, habits, metrics, importantDates, days, activities, dayHabits, dayMetrics, notes, inbox, tasks] =
     await Promise.all([
       db.user.findUnique({ where: { id: userId } }),
-      findGoalsByUserWithTasks(userId),
+      findGoalsByUser(userId),
       findHabitsByUser(userId),
       findMetricsByUser(userId),
       db.importantDate.findMany({ where: { userId }, orderBy: { date: 'asc' } }),
@@ -738,6 +777,7 @@ export async function assembleLedgerRaw(userId: string): Promise<Ledger> {
       db.dayMetric.findMany({ where: { userId } }),
       db.note.findMany({ where: { userId }, orderBy: { date: 'asc' } }),
       db.inboxItem.findMany({ where: { userId, done: false }, orderBy: { addedAt: 'desc' } }),
+      findTasksByUser(userId),
     ])
 
   if (!user) throw new Error('user not found')
@@ -779,12 +819,12 @@ export async function assembleLedgerRaw(userId: string): Promise<Ledger> {
       deadline: g.deadline ? d2s(g.deadline) : null,
       weeklyTargetHours: g.weeklyTargetHours, color: g.color,
       milestones: Array.isArray(g.milestones) ? (g.milestones as Ledger['goals'][number]['milestones']) : [],
-      tasks: g.tasks.map((t) => ({
-        id: t.id, goalId: t.goalId, label: t.label,
-        status: t.status as 'todo' | 'doing' | 'done',
-        priority: t.priority as 'normal' | 'high',
-        urgent: t.urgent, important: t.important, lastTouched: d2s(t.lastTouched),
-      })),
+    })),
+    tasks: tasks.map((t) => ({
+      id: t.id, goalId: t.goalId, label: t.label,
+      status: t.status as 'todo' | 'doing' | 'done',
+      priority: t.priority as 'normal' | 'high',
+      urgent: t.urgent, important: t.important, lastTouched: d2s(t.lastTouched),
     })),
     metrics: metrics.map((m) => ({
       id: m.id, name: m.name, direction: m.direction as 'up' | 'down', unit: m.unit,
@@ -792,6 +832,7 @@ export async function assembleLedgerRaw(userId: string): Promise<Ledger> {
     })),
     habits: habits.map((h) => ({
       id: h.id, name: h.name, targetPerWeek: h.targetPerWeek, color: h.color,
+      archived: h.archived,
     })),
     importantDates: importantDates.map((d) => ({
       id: d.id, label: d.label, date: d2s(d.date), type: d.type, repeatsAnnually: d.repeatsAnnually,
@@ -1143,8 +1184,8 @@ export interface UserBackupPayload {
     createdAt: string
   }
   goals: Array<{ userId: string; id: string; name: string; unit: string; target: number; deadline: string | null; weeklyTargetHours: number; color: string | null; sortOrder: number; milestones: unknown }>
-  tasks: Array<{ id: string; userId: string; goalId: string; label: string; status: string; priority: string; urgent: boolean; important: boolean; lastTouched: string }>
-  habits: Array<{ userId: string; id: string; name: string; targetPerWeek: number; color: string | null; sortOrder: number }>
+  tasks: Array<{ id: string; userId: string; goalId: string | null; label: string; status: string; priority: string; urgent: boolean; important: boolean; lastTouched: string }>
+  habits: Array<{ userId: string; id: string; name: string; targetPerWeek: number; color: string | null; sortOrder: number; archived: boolean }>
   metrics: Array<{ userId: string; id: string; name: string; direction: string; unit: string; dailyTarget: number | null; monthlyTarget: number | null; sortOrder: number }>
   importantDates: Array<{ id: string; userId: string; label: string; date: string; type: string; repeatsAnnually: boolean }>
   days: Array<{ userId: string; date: string; highlight: string | null; checkIn: unknown }>
@@ -1249,7 +1290,7 @@ export async function restoreUserPayload(userId: string, payload: UserBackupPayl
       await tx.habit.upsert({
         where: { userId_id: { userId: h.userId, id: h.id } },
         create: h,
-        update: { name: h.name, targetPerWeek: h.targetPerWeek },
+        update: { name: h.name, targetPerWeek: h.targetPerWeek, archived: h.archived },
       })
     }
     for (const m of payload.metrics) {

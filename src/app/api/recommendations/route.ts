@@ -50,8 +50,8 @@ type DayT = LedgerT['days'][number]
 
 function buildContext(ledger: LedgerT, day: DayT | undefined, t: string) {
   const todayHours = day ? day.activities.reduce((s, a) => s + a.hours, 0) : 0
-  const undoneHabits = ledger.habits.filter((h) => !(day?.habits[h.id]))
-  const pendingTasks = ledger.goals.flatMap((g) => g.tasks).filter((tk) => tk.status !== 'done')
+  const undoneHabits = ledger.habits.filter((h) => !h.archived && !(day?.habits[h.id]))
+  const pendingTasks = ledger.tasks.filter((tk) => tk.status !== 'done')
   const upcoming = ledger.importantDates.filter((d) => {
     const days = (new Date(d.date).getTime() - new Date(t).getTime()) / 86400000
     return days >= 0 && days <= 7
@@ -118,14 +118,14 @@ function fallbackRecommendations(ledger: LedgerT, day: DayT | undefined, t: stri
   if (!day || day.activities.length === 0) {
     out.push({ kind: 'activity', text: 'Nothing logged today — add what you worked on', goalId: ledger.goals[0]?.id })
   }
-  const undone = ledger.habits.filter((h) => !(day?.habits[h.id])).slice(0, 1)
+  const undone = ledger.habits.filter((h) => !h.archived && !(day?.habits[h.id])).slice(0, 1)
   for (const h of undone) {
     out.push({ kind: 'habit', text: `\u201C${h.name}\u201D isn\u2019t checked off yet — did it happen today?` })
   }
-  const urgent = ledger.goals
-    .flatMap((g) => g.tasks.map((tk) => ({ tk, g })))
-    .filter(({ tk }) => tk.status !== 'done' && tk.urgent)
+  const urgent = ledger.tasks
+    .filter((tk) => tk.status !== 'done' && tk.urgent)
     .slice(0, 1)
+    .map((tk) => ({ tk, g: { name: ledger.goals.find((gg) => gg.id === tk.goalId)?.name ?? 'no goal' } }))
   for (const { tk, g } of urgent) {
     out.push({ kind: 'note', text: `Urgent: \u201C${tk.label}\u201D (${g.name}) — jot where it stands` })
   }

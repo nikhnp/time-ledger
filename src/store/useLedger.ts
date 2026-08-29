@@ -16,7 +16,7 @@ import type {
   ScreenEntryT,
   EntryRecommendation,
 } from '@/lib/types'
-import { clientTz } from '@/lib/dates'
+import { clientTz, todayStr } from '@/lib/dates'
 
 export type ViewId =
   | 'today' | 'week' | 'month' | 'habits' | 'board' | 'budget'
@@ -78,17 +78,23 @@ interface LedgerStore {
   toggleHabit: (habitId: string, date?: string) => Promise<void>
   addNote: (text: string, date?: string) => Promise<string | null>
   deleteNote: (id: string) => Promise<void>
-  addTask: (goalId: string, label: string, priority?: 'normal' | 'high') => Promise<void>
+  addTask: (goalId: string | null, label: string, priority?: 'normal' | 'high', opts?: { status?: 'todo' | 'doing' | 'done'; urgent?: boolean; important?: boolean }) => Promise<void>
   updateTask: (id: string, patch: Record<string, unknown>) => Promise<void>
   deleteTask: (id: string) => Promise<void>
   updateGoal: (id: string, patch: Record<string, unknown>) => Promise<void>
+  deleteGoal: (id: string) => Promise<void>
+  logGoalHours: (goalId: string, hours: number, date?: string) => Promise<boolean>
   addInboxItem: (text: string) => Promise<void>
   deleteInboxItem: (id: string) => Promise<void>
-  inboxToTask: (id: string, goalId: string) => Promise<void>
+  inboxToTask: (id: string, goalId: string | null) => Promise<void>
   inboxToNote: (id: string) => Promise<void>
+  inboxToHabit: (id: string) => Promise<void>
+  inboxToDeadline: (id: string, date: string) => Promise<void>
   addImportantDate: (label: string, date: string, type: string) => Promise<boolean>
   addGoal: (name: string, opts?: { target?: number; unit?: string; weeklyTargetHours?: number }) => Promise<boolean>
   addHabit: (name: string, targetPerWeek?: number) => Promise<boolean>
+  updateHabit: (id: string, patch: { name?: string; targetPerWeek?: number; archived?: boolean }) => Promise<void>
+  deleteHabit: (id: string) => Promise<void>
   userAction: (name: string, action: string) => Promise<void>
   setPassword: (pw: string) => Promise<string | null>
   deleteAccount: () => Promise<string | null>
@@ -338,29 +344,26 @@ export const useLedger = create<LedgerStore>((set, get) => ({
     if (r.ok) set({ ledger: r.data.ledger })
   },
 
-  async addTask(goalId, label, priority = 'normal') {
+  async addTask(goalId, label, priority = 'normal', opts) {
     const r = await api<{ ledger: Ledger }>('/api/tasks', {
       method: 'POST',
-      body: JSON.stringify({ goalId, label, priority }),
+      body: JSON.stringify({ goalId, label, priority, ...opts }),
     })
     if (!r.ok) { get().showToast(r.error); return }
     set({ ledger: r.data.ledger })
   },
 
   async updateTask(id, patch) {
-    /* optimistic */
+    /* optimistic — v10.5: tasks live flat on the ledger */
     const led = get().ledger
     if (led) {
-      let changed = false
-      const goals = led.goals.map((g) => ({
-        ...g,
-        tasks: g.tasks.map((t) => {
-          if (t.id !== id) return t
-          changed = true
-          return { ...t, ...patch, lastTouched: new Date().toISOString().slice(0, 10) } as typeof t
-        }),
-      }))
-      if (changed) set({ ledger: { ...led, goals } })
+      const changed = led.tasks.some((t) => t.id === id)
+      if (changed) {
+        const tasks = led.tasks.map((t) =>
+          t.id === id ? ({ ...t, ...patch, lastTouched: new Date().toISOString().slice(0, 10) } as typeof t) : t,
+        )
+        set({ ledger: { ...led, tasks } })
+      }
     }
     const r = await api<{ ledger: Ledger }>(`/api/tasks/${id}`, {
       method: 'PATCH',
@@ -413,7 +416,8 @@ export const useLedger = create<LedgerStore>((set, get) => ({
     })
     if (!created.ok) { get().showToast(created.error); return }
     await get().deleteInboxItem(id)
-    get().showToast('Task created from inbox ✓')
+    get().showToast(goalId ? 'Task created from inbox ✓' : 'Unassigned task created ✓')
+    if (goalId) get().setView('board')
   },
 
   async inboxToNote(id) {
@@ -424,6 +428,33 @@ export const useLedger = create<LedgerStore>((set, get) => ({
     if (added) {
       await get().deleteInboxItem(id)
       get().showToast('Filed as a note ✓')
+      get().setView('notes')
+    }
+  },
+
+  /** v10.5: turn a captured thought into a daily habit (7x/week default). */
+  async inboxToHabit(id) {
+    const led = get().ledger
+    const item = led?.inbox.find((i) => i.id === id)
+    if (!item) return
+    const ok = await get().addHabit(item.text, 7)
+    if (ok) {
+      await get().deleteInboxItem(id)
+      get().showToast('Habit created — tweak its target in Habits ✓')
+      get().setView('habits')
+    }
+  },
+
+  /** v10.5: turn a captured thought into a dated deadline ("Coming up"). */
+  async inboxToDeadline(id, date) {
+    const led = get().ledger
+    const item = led?.inbox.find((i) => i.id === id)
+    if (!item) return
+    const ok = await get().addImportantDate(item.text, date, 'deadline')
+    if (ok) {
+      await get().deleteInboxItem(id)
+      get().showToast(`Deadline set for ${date} ✓`)
+      get().setView('today')
     }
   },
 
@@ -448,6 +479,23 @@ export const useLedger = create<LedgerStore>((set, get) => ({
     return true
   },
 
+  /** v10.5: delete a goal (its tasks cascade server-side). */
+  async deleteGoal(id) {
+    const r = await api<{ ledger: Ledger }>(`/api/goals/${id}`, { method: 'DELETE' })
+    if (!r.ok) { get().showToast(r.error); return }
+    set({ ledger: r.data.ledger })
+    get().showToast('Goal removed ✓')
+  },
+
+  /** v10.5: quick-log hours against a goal (creates an activity via merge). */
+  async logGoalHours(goalId, hours, date) {
+    if (!(hours > 0 && hours <= 24)) { get().showToast('Hours must be between 0 and 24.'); return false }
+    const res = await get().mergeDeltas([{ date: date ?? todayStr(), activities: [{ goalId, hours }] }])
+    if ('error' in res) { get().showToast(res.error); return false }
+    get().showToast(`Logged ${hours}h ✓`)
+    return true
+  },
+
   /** v11: create a habit. */
   async addHabit(name, targetPerWeek) {
     const r = await api<{ ledger: Ledger }>('/api/habits', {
@@ -457,6 +505,30 @@ export const useLedger = create<LedgerStore>((set, get) => ({
     if (!r.ok) { get().showToast(r.error); return false }
     set({ ledger: r.data.ledger })
     return true
+  },
+
+  /** v10.5: rename / retarget / archive a habit. */
+  async updateHabit(id, patch) {
+    /* optimistic for the archive toggle */
+    const led = get().ledger
+    if (led && patch.archived !== undefined) {
+      const habits = led.habits.map((h) => (h.id === id ? { ...h, ...patch } : h))
+      set({ ledger: { ...led, habits } })
+    }
+    const r = await api<{ ledger: Ledger }>(`/api/habits/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    })
+    if (r.ok) set({ ledger: r.data.ledger })
+    else get().showToast(r.error)
+  },
+
+  /** v10.5: permanently delete a habit and its check history. */
+  async deleteHabit(id) {
+    const r = await api<{ ledger: Ledger }>(`/api/habits/${id}`, { method: 'DELETE' })
+    if (!r.ok) { get().showToast(r.error); return }
+    set({ ledger: r.data.ledger })
+    get().showToast('Habit deleted ✓')
   },
 
   async userAction(name, action) {

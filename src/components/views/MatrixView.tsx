@@ -1,10 +1,11 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { DndContext, PointerSensor, TouchSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { useDraggable, useDroppable } from '@dnd-kit/core'
 import { useLedger } from '@/store/useLedger'
 import { I } from '@/components/Icon'
+import { RoughBtn } from '@/components/rough/controls'
 import { ViewHead, Washi } from '@/components/bits'
 import { allTasks, quadrantOf, type Quadrant } from '@/lib/derivations'
 import { goalCat } from '@/lib/colors'
@@ -17,7 +18,7 @@ const QUADS: Array<{ id: Quadrant; title: string; color: string }> = [
 ]
 const Q_ORDER: Quadrant[] = ['q1', 'q2', 'q4', 'q3']
 
-function MItem({ task, goalId, goalName }: { task: { id: string; label: string; urgent: boolean; important: boolean; status: string }; goalId: string; goalName: string }) {
+function MItem({ task, goalId, goalName }: { task: { id: string; label: string; urgent: boolean; important: boolean; status: string }; goalId: string | null; goalName: string }) {
   const updateTask = useLedger((s) => s.updateTask)
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: task.id })
   const cat = goalCat(goalId)
@@ -64,7 +65,7 @@ function MItem({ task, goalId, goalName }: { task: { id: string; label: string; 
   )
 }
 
-function Quad({ quad, tasks }: { quad: typeof QUADS[number]; tasks: Array<{ task: { id: string; label: string; urgent: boolean; important: boolean; status: string }; goalId: string; goalName: string }> }) {
+function Quad({ quad, tasks }: { quad: typeof QUADS[number]; tasks: Array<{ task: { id: string; label: string; urgent: boolean; important: boolean; status: string }; goalId: string | null; goalName: string }> }) {
   const { setNodeRef, isOver } = useDroppable({ id: quad.id })
   return (
     <div className={`matrix-quad${isOver ? ' drag-over' : ''}`} ref={setNodeRef} data-q={quad.id}>
@@ -79,6 +80,11 @@ function Quad({ quad, tasks }: { quad: typeof QUADS[number]; tasks: Array<{ task
 
 export default function MatrixView() {
   const ledger = useLedger((s) => s.ledger)!
+  const addTask = useLedger((s) => s.addTask)
+  const [label, setLabel] = useState('')
+  const [quad, setQuad] = useState<Quadrant>('q2')
+  const [goalId, setGoalId] = useState(ledger.goals[0]?.id ?? '')
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 120, tolerance: 8 } }),
@@ -88,6 +94,16 @@ export default function MatrixView() {
     () => allTasks(ledger).filter((x) => quadrantOf(x.task) !== null),
     [ledger]
   )
+
+  function submit() {
+    if (!label.trim()) { useLedger.getState().showToast('Give the item a name.'); return }
+    addTask(goalId || null, label.trim(), 'normal', {
+      urgent: quad === 'q1' || quad === 'q3',
+      important: quad === 'q1' || quad === 'q2',
+    })
+    setLabel('')
+    useLedger.getState().showToast('Added to matrix ✓')
+  }
 
   function onDragEnd(e: DragEndEvent) {
     const id = String(e.active.id)
@@ -99,6 +115,24 @@ export default function MatrixView() {
   return (
     <>
       <ViewHead title="Matrix" sub="urgent vs important — drag cards between quadrants" />
+      <div className="board-add">
+        <input
+          type="text"
+          placeholder="Add to the matrix — e.g. Renew passport"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit() }}
+        />
+        <select value={quad} onChange={(e) => setQuad(e.target.value as Quadrant)} aria-label="Quadrant">
+          {QUADS.map((q) => <option key={q.id} value={q.id}>{q.title.split(' — ')[0]}</option>)}
+        </select>
+        <select value={goalId} onChange={(e) => setGoalId(e.target.value)} aria-label="Goal">
+          {ledger.goals.length === 0 && <option value="">No goal</option>}
+          {ledger.goals.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          {ledger.goals.length > 0 && <option value="">No goal</option>}
+        </select>
+        <RoughBtn variant="primary" className="btn-sm" onClick={submit}><I name="plus" /> Add</RoughBtn>
+      </div>
       <DndContext sensors={sensors} onDragEnd={onDragEnd}>
         <div className="matrix-grid">
           {QUADS.map((quad) => (
